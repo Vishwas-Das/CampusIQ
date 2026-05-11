@@ -26,6 +26,8 @@ import QuizTakingPage from '../pages/student/QuizTakingPage'
 import QuizResultPage from '../pages/student/QuizResultPage'
 import CommunityPage from '../pages/student/CommunityPage'
 import SchedulePage from '../pages/student/SchedulePage'
+import CodingProblemsPage from '../pages/student/CodingProblemsPage'
+import CodingProblemPage from '../pages/student/CodingProblemPage'
 import ResumeBuilderPage from '../pages/student/ResumeBuilderPage'
 import SkillGapPage from '../pages/student/SkillGapPage'
 import MockInterviewPage from '../pages/student/MockInterviewPage'
@@ -82,6 +84,8 @@ const router = createBrowserRouter(
         <Route path="student" element={<AppLayout />}>
           <Route index element={<StudentDashboard />} />
           <Route path="notes" element={<NoteAssistantPage />} />
+          <Route path="coding" element={<CodingProblemsPage />} />
+          <Route path="coding/:slug" element={<CodingProblemPage />} />
           <Route path="college-gpt" element={<CollegeGPTPage />} />
           <Route path="quizzes" element={<QuizListPage />} />
           <Route path="quizzes/:quizId/take" element={<QuizTakingPage />} />

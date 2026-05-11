@@ -5,7 +5,7 @@ import {
   Calendar, FileText, Target, Mic, Video, Briefcase, MessageCircle,
   Zap, Trophy, User, Settings, ChevronLeft, ChevronRight,
   Upload, BarChart3, Users, Shield, Bell, ClipboardList,
-  GitBranch, AlertTriangle, LogOut, Swords, PenLine,
+  GitBranch, AlertTriangle, LogOut, Swords, PenLine, Code2,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useAuthStore } from '../../store/authStore'
@@ -30,6 +30,7 @@ const studentNav: NavSection[] = [
     items: [
       { to: '/student', icon: LayoutDashboard, label: 'Dashboard', end: true },
       { to: '/student/notes', icon: BookOpen, label: 'AI Note Assistant' },
+      { to: '/student/coding', icon: Code2, label: 'Coding' },
       { to: '/student/college-gpt', icon: GraduationCap, label: 'CollegeGPT' },
       { to: '/student/quizzes', icon: Brain, label: 'Quiz Engine' },
       { to: '/student/community', icon: MessageSquare, label: 'Doubt Community' },
