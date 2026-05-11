@@ -37,6 +37,7 @@ BASE_XP: dict[XPEventType, int] = {
     XPEventType.SKILL_UNLOCKED: 50,
     XPEventType.DAILY_LOGIN: 10,
     XPEventType.BADGE_EARNED: 100,
+    XPEventType.CODING_PROBLEM_SOLVED: 45,  # between doubt-answered and mock-interview
 }
 
 # Per-difficulty quiz multiplier on top of the base (DAA Unit IV greedy slope)

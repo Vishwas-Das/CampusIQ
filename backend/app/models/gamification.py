@@ -22,6 +22,7 @@ class XPEventType(str, enum.Enum):
     SKILL_UNLOCKED = "skill_unlocked"
     DAILY_LOGIN = "daily_login"
     BADGE_EARNED = "badge_earned"
+    CODING_PROBLEM_SOLVED = "coding_problem_solved"
 
 
 class XPEvent(Base):

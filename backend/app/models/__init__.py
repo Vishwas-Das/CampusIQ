@@ -18,6 +18,13 @@ from app.models.algorithm import (
     WeeklySchedule,
 )
 from app.models.chat import ChatMessage, ChatSession, ChatType, MessageRole
+from app.models.coding import (
+    CodingDifficulty,
+    CodingLanguage,
+    CodingProblem,
+    CodingSubmission,
+    CodingSubmissionStatus,
+)
 from app.models.community import Doubt, DoubtAnswer
 from app.models.crash_mode import CrashModePlan
 from app.models.content import (
@@ -89,6 +96,12 @@ __all__ = [
     "ChatMessage",
     "ChatType",
     "MessageRole",
+    # Coding (V1 platform)
+    "CodingProblem",
+    "CodingSubmission",
+    "CodingDifficulty",
+    "CodingLanguage",
+    "CodingSubmissionStatus",
     # Quiz
     "Quiz",
     "Question",
