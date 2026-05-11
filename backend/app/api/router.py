@@ -8,6 +8,7 @@ from app.api.routes import (
     announcements,
     auth,
     chat,
+    coding,
     college_documents,
     community,
     confidence,
@@ -54,3 +55,4 @@ api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(notifications.router, prefix="/ws", tags=["websockets"])
 api_router.include_router(boss_battles.router, prefix="/boss-battles", tags=["boss-battles"])
 api_router.include_router(public_profile.router, prefix="/profile/public", tags=["public-profile"])
+api_router.include_router(coding.router, prefix="/coding", tags=["coding"])
