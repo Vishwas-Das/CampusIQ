@@ -62,8 +62,12 @@ export function loadPyodideSingleton(): Promise<Pyodide> {
       const mod = await import('pyodide')
       // pyodide's bundled WASM/.data files need to be loadable — we point at
       // the official CDN. Could be swapped for a self-hosted asset later.
+      // CDN URL must match the npm package version exactly, or pyodide.asm.js
+      // and the bundled .mjs disagree and the loader throws
+      // "Importing a module script failed." Bump this whenever the package
+      // version in package.json changes.
       const pyo = await mod.loadPyodide({
-        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.28.4/full/',
+        indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.29.4/full/',
       })
       return pyo
     })()
