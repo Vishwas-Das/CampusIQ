@@ -28,10 +28,18 @@ import type {
   ClassAnalytics,
   ChunkCreate,
   ChunkUpdate,
+  CodingStatsResponse,
   CollegeDocument,
   CollegeDocumentCategory,
   KnowledgeSuggestion,
   CompanyProfile,
+  ListProblemsOptions,
+  ProblemDetail,
+  ProblemListItem,
+  ProblemRunnerPayload,
+  SubmissionResponse,
+  SubmitRequest,
+  SubmitResultResponse,
   DashboardResponse,
   AccessibleTeacher,
   DoubtAnswerCreate,
@@ -768,6 +776,27 @@ export const skillsApi = {
 }
 
 // ── Resume Builder (Phase 14, F6) ──
+
+// ── Coding-practice platform (V1, F-coding) ──
+
+export const codingApi = {
+  listProblems: (opts: ListProblemsOptions = {}) => {
+    const params = new URLSearchParams()
+    if (opts.difficulty) params.set('difficulty', opts.difficulty)
+    if (opts.topic) params.set('topic', opts.topic)
+    if (opts.userStatus) params.set('user_status', opts.userStatus)
+    const q = params.toString()
+    return api.get<ProblemListItem[]>(`/coding/problems${q ? '?' + q : ''}`)
+  },
+  getProblem: (slug: string) => api.get<ProblemDetail>(`/coding/problems/${slug}`),
+  getRunnerPayload: (slug: string) =>
+    api.get<ProblemRunnerPayload>(`/coding/problems/${slug}/runner`),
+  submit: (slug: string, payload: SubmitRequest) =>
+    api.post<SubmitResultResponse>(`/coding/problems/${slug}/submit`, payload),
+  listSubmissions: (slug: string) =>
+    api.get<SubmissionResponse[]>(`/coding/problems/${slug}/submissions`),
+  getStats: () => api.get<CodingStatsResponse>('/coding/stats'),
+}
 
 export const resumeApi = {
   me: () => api.get<ResumeResponse>('/resume/me'),
