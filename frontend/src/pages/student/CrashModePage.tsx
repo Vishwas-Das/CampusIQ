@@ -160,7 +160,14 @@ export default function CrashModePage() {
           }))
         : FALLBACK_TASKS
 
-      const schedule = await algorithmsApi.generateSchedule({ tasks: taskInputs, days: options.days })
+      // Crash Mode prefers backtracking — it produces tight, dense schedules
+      // (the "cram everything in N days" feel) whereas the default spread is
+      // calmer for normal weekly planning. Different feature, different strategy.
+      const schedule = await algorithmsApi.generateSchedule({
+        tasks: taskInputs,
+        days: options.days,
+        strategy: 'backtracking',
+      })
 
       const persisted = await crashModeApi.upsert({
         target_label: options.target,

@@ -105,7 +105,14 @@ export interface GenerateScheduleResponse {
   explored_nodes: number
 }
 
+export type ScheduleStrategy = 'spread' | 'backtracking'
+
 export interface GenerateScheduleRequest {
   tasks: StudyTaskInput[]
   days?: number
+  /** Default `spread` — realistic round-robin. `backtracking` is the
+   *  branch-and-bound packer used by Crash Mode. */
+  strategy?: ScheduleStrategy
+  /** Per-day hour ceiling for the `spread` strategy (default 3 server-side). */
+  daily_cap_hours?: number
 }
