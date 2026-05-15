@@ -17,6 +17,8 @@ interface ServerEvent {
   title?: string
   content?: string
   created_at?: string
+  /** Server-side retry count if this is a redelivery; useful for debugging. */
+  retry_count?: number
 }
 
 const KNOWN_KINDS: Record<string, NotificationKind> = {
@@ -79,6 +81,17 @@ export function useNotificationsSocket(): void {
           content: data.content ?? '',
           createdAt: data.created_at,
         })
+        // TCP-style ACK back to the server so the delivery row flips from
+        // SENT → ACKED and the retry loop stops trying. Only ACK when we
+        // have a server-issued id (client-generated fallback ids would
+        // never match a row server-side).
+        if (data.id && ws.readyState === WebSocket.OPEN) {
+          try {
+            ws.send(JSON.stringify({ type: 'ack', id: data.id }))
+          } catch {
+            // ignore — the retry loop will redeliver on backoff
+          }
+        }
       }
 
       ws.onclose = (ev) => {

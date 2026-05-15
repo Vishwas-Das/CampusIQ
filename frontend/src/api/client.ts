@@ -37,6 +37,8 @@ import type {
   KnowledgeSuggestion,
   CompanyProfile,
   ListProblemsOptions,
+  NotificationStatsResponse,
+  NotificationStatusResponse,
   ProblemDetail,
   ProblemListItem,
   ProblemRunnerPayload,
@@ -533,6 +535,16 @@ export const adminApi = {
     const query = qs.toString() ? `?${qs.toString()}` : ''
     return api.get<AdminUserListResponse>(`/admin/users${query}`)
   },
+  // Phase 21 — TCP-style delivery dashboard.
+  notificationStatus: (params?: { limit?: number; offset?: number }) => {
+    const qs = new URLSearchParams()
+    if (params?.limit != null) qs.set('limit', String(params.limit))
+    if (params?.offset != null) qs.set('offset', String(params.offset))
+    const query = qs.toString() ? `?${qs.toString()}` : ''
+    return api.get<NotificationStatusResponse>(`/admin/notifications/status${query}`)
+  },
+  notificationStats: () =>
+    api.get<NotificationStatsResponse>('/admin/notifications/stats'),
 }
 
 // ── Announcements (Phase 13) ──
