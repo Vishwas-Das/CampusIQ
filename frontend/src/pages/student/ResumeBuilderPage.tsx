@@ -75,6 +75,25 @@ function atsBadgeVariant(score: number): 'success' | 'warning' | 'danger' {
   return 'danger'
 }
 
+/** Tick a wall-clock seconds counter while `active` is true; reset to 0 when
+ *  it flips back. Useful for "Importing… (3s)" style affordances on calls
+ *  that can take 5-10s (Claude + GitHub fetches). */
+function useElapsedSeconds(active: boolean): number {
+  const [elapsed, setElapsed] = useState(0)
+  useEffect(() => {
+    if (!active) {
+      setElapsed(0)
+      return
+    }
+    const startedAt = Date.now()
+    const id = window.setInterval(() => {
+      setElapsed(Math.floor((Date.now() - startedAt) / 1000))
+    }, 250)
+    return () => window.clearInterval(id)
+  }, [active])
+  return elapsed
+}
+
 const PHOTO_MAX_EDGE = 400
 const PHOTO_QUALITY = 0.85
 const PHOTO_MAX_INPUT_BYTES = 10 * 1024 * 1024 // refuse >10MB at the input layer
@@ -121,11 +140,13 @@ export default function ResumeBuilderPage() {
   const [atsJD, setAtsJD] = useState('')
   const [atsScoring, setAtsScoring] = useState(false)
   const [atsResult, setAtsResult] = useState<ATSScoreResponse | null>(null)
+  const atsElapsed = useElapsedSeconds(atsScoring)
 
   // GitHub import modal
   const [ghOpen, setGhOpen] = useState(false)
   const [ghUsername, setGhUsername] = useState('')
   const [ghImporting, setGhImporting] = useState(false)
+  const ghElapsed = useElapsedSeconds(ghImporting)
   const [ghResult, setGhResult] = useState<{
     count: number
     names: string[]
@@ -973,7 +994,7 @@ export default function ResumeBuilderPage() {
               {atsScoring ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  Scoring…
+                  Scoring{atsElapsed > 1 ? ` · ${atsElapsed}s` : '…'}
                 </>
               ) : (
                 'Score My Resume'
@@ -1055,7 +1076,7 @@ export default function ResumeBuilderPage() {
               {ghImporting ? (
                 <>
                   <Loader2 className="h-4 w-4 mr-1 animate-spin" />
-                  Importing…
+                  Importing{ghElapsed > 1 ? ` · ${ghElapsed}s` : '…'}
                 </>
               ) : (
                 'Import top 5'

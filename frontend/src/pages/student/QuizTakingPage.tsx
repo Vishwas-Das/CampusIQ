@@ -222,6 +222,10 @@ export default function QuizTakingPage() {
 
   const handleSubmit = async () => {
     if (!quiz) return
+    // Double-submit guard: the button disables on `submitting`, but a
+    // rapid double-click can fire before React flushes that state, so
+    // also guard imperatively here.
+    if (submitting) return
     setSubmitting(true)
     setError(null)
     try {

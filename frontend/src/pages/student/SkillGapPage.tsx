@@ -31,6 +31,94 @@ const fadeUp: Variants = {
   animate: { opacity: 1, y: 0, transition: { duration: 0.1, ease: [0.25, 0.46, 0.45, 0.94] } },
 }
 
+// Visible representation of the pipeline running server-side while the
+// plan is being computed (mastery → rescale → Dijkstra → Knapsack).
+// Cycles through the four steps so the user has something to read
+// during a 2–5s wait. We don't actually know which step the server is
+// on, so this is a cosmetic indicator, not real progress — keep the
+// per-step timing slow enough that it feels intentional, not nervous.
+const PLAN_STEPS: ReadonlyArray<{ label: string; detail: string }> = [
+  {
+    label: 'Reading your mastery',
+    detail: 'Per-topic averages from your quiz history + declared skills',
+  },
+  {
+    label: 'Rescaling skill graph edges',
+    detail: 'adjusted = base × (1 − α·mastery(u)) × (1 + β·gap(v))',
+  },
+  {
+    label: 'Dijkstra to every required skill',
+    detail: 'Multi-target shortest paths with the dynamic weights',
+  },
+  {
+    label: '0/1 Knapsack over your hours',
+    detail: 'DP picks the topics that maximise predicted gain',
+  },
+]
+
+function PlanComputeSkeleton() {
+  const [activeStep, setActiveStep] = useState(0)
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setActiveStep((s) => (s + 1) % PLAN_STEPS.length)
+    }, 850)
+    return () => window.clearInterval(id)
+  }, [])
+  return (
+    <Card>
+      <div className="flex items-center gap-3 mb-4">
+        <Loader2 className="h-5 w-5 animate-spin text-primary" />
+        <div>
+          <h3 className="text-sm font-semibold text-[var(--text-primary)]">
+            Computing your adaptive plan…
+          </h3>
+          <p className="text-xs text-[var(--text-tertiary)] mt-0.5">
+            Combining four DAA algorithms over your live mastery snapshot.
+          </p>
+        </div>
+      </div>
+      <ol className="space-y-3 pl-1">
+        {PLAN_STEPS.map((step, i) => {
+          const active = i === activeStep
+          const passed = i < activeStep
+          return (
+            <li key={step.label} className="flex items-start gap-3">
+              <div
+                className="mt-1.5 h-2 w-2 shrink-0 rounded-full transition-colors duration-300"
+                style={{
+                  background: active
+                    ? 'var(--gradient-accent, #A78BFA)'
+                    : passed
+                      ? 'var(--text-tertiary)'
+                      : 'var(--border-default)',
+                  boxShadow: active
+                    ? '0 0 12px var(--glow-color, rgba(167,139,250,0.4))'
+                    : undefined,
+                }}
+              />
+              <div className="min-w-0">
+                <p
+                  className="text-sm font-medium transition-colors duration-300"
+                  style={{
+                    color: active || passed
+                      ? 'var(--text-primary)'
+                      : 'var(--text-tertiary)',
+                  }}
+                >
+                  {step.label}
+                </p>
+                <p className="text-xs font-mono text-[var(--text-tertiary)] mt-0.5">
+                  {step.detail}
+                </p>
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+    </Card>
+  )
+}
+
 export default function SkillGapPage() {
   const [companies, setCompanies] = useState<CompanyProfile[]>([])
   const [loadingCompanies, setLoadingCompanies] = useState(true)
@@ -177,6 +265,15 @@ export default function SkillGapPage() {
         >
           <AlertCircle className="h-4 w-4 mt-0.5 shrink-0" />
           <span>{error}</span>
+        </motion.div>
+      )}
+
+      {/* First-time compute (no prior plan visible) — show the four-step
+          skeleton so the 2-5s wait isn't a blank page. Subsequent
+          recomputes keep the old plan visible with the small pill above. */}
+      {computing && !plan && !error && (
+        <motion.div variants={fadeUp}>
+          <PlanComputeSkeleton />
         </motion.div>
       )}
 
