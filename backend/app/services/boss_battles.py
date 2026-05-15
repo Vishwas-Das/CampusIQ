@@ -172,14 +172,25 @@ _SAMPLE_BATTLES: list[dict[str, Any]] = [
 
 
 def seed_sample_battles(db: Session) -> int:
-    """Create the three demo battles if none currently exist. Returns count created."""
-    existing = db.scalar(select(Challenge.id).where(Challenge.challenge_type == ChallengeType.BOSS_BATTLE))
-    if existing is not None:
-        return 0
+    """Create any missing demo battles. Idempotent — keyed on title.
+
+    Per-title idempotency (rather than "skip if any boss battle exists")
+    lets the seed recover from a partial wipe: e.g. a teacher deleted
+    one of the three. Returns the count newly inserted.
+    """
+    existing_titles = set(
+        db.scalars(
+            select(Challenge.title).where(
+                Challenge.challenge_type == ChallengeType.BOSS_BATTLE
+            )
+        ).all()
+    )
 
     now = datetime.now(tz=timezone.utc)
     created = 0
     for entry in _SAMPLE_BATTLES:
+        if entry["title"] in existing_titles:
+            continue
         battle = Challenge(
             title=entry["title"],
             description=entry["description"],
@@ -191,7 +202,8 @@ def seed_sample_battles(db: Session) -> int:
         )
         db.add(battle)
         created += 1
-    db.commit()
+    if created:
+        db.commit()
     return created
 
 
@@ -368,11 +380,25 @@ def submit_battle(
         raise HTTPException(status_code=400, detail="Boss battle has no questions configured.")
 
     # Score: % correct, then time bonus up to +20 if finished well under limit.
+    # Also build a per-question correctness breakdown so the frontend can
+    # show "you got Q3 wrong — the answer was X" after submission.
     correct = 0
+    breakdown: list[dict[str, Any]] = []
     for q in questions:
         student_answer = (answers.get(q.get("id"), "") or "").strip()
-        if student_answer == q.get("answer"):
+        right_answer = q.get("answer")
+        is_correct = student_answer == right_answer
+        if is_correct:
             correct += 1
+        breakdown.append(
+            {
+                "question_id": q.get("id"),
+                "question": q.get("question"),
+                "student_answer": student_answer or None,
+                "correct_answer": right_answer,
+                "is_correct": is_correct,
+            }
+        )
     base_pct = round(100 * correct / len(questions), 2)
 
     time_limit = max(1, int(rules.get("time_limit_seconds") or 60))
@@ -458,6 +484,7 @@ def submit_battle(
         "correct_count": correct,
         "total_questions": len(questions),
         "speed_bonus": speed_bonus,
+        "breakdown": breakdown,
     }
 
 

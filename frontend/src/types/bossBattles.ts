@@ -52,10 +52,19 @@ export interface BossBattleListResponse {
   past: BossBattle[]
 }
 
+export interface BossBattleAnswerBreakdown {
+  question_id: string
+  question: string
+  student_answer: string | null
+  correct_answer: string
+  is_correct: boolean
+}
+
 export interface BossBattleSubmitResponse {
   entry: BossBattleEntry
   score: number
   correct_count: number
   total_questions: number
   speed_bonus: number
+  breakdown: BossBattleAnswerBreakdown[]
 }

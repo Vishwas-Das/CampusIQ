@@ -3,12 +3,14 @@ import { motion, type Variants } from 'framer-motion'
 import { clsx } from 'clsx'
 import {
   AlertCircle,
+  Check,
   Crown,
   Loader2,
   Sparkles,
   Swords,
   Timer,
   Trophy,
+  X,
 } from 'lucide-react'
 import Card, { CardHeader, CardTitle, CardLabel } from '../../components/ui/Card'
 import Badge from '../../components/ui/Badge'
@@ -16,6 +18,7 @@ import Button from '../../components/ui/Button'
 import { ApiError, bossBattlesApi } from '../../api/client'
 import type {
   BossBattle,
+  BossBattleAnswerBreakdown,
   BossBattleDetail,
   BossBattleLeaderboardRow,
   BossBattleListResponse,
@@ -71,6 +74,7 @@ export default function BossBattlesPage() {
         bonus: number
         rank: number | null
         leaderboard: BossBattleLeaderboardRow[]
+        breakdown: BossBattleAnswerBreakdown[]
       }
     | null
   >(null)
@@ -171,6 +175,7 @@ export default function BossBattlesPage() {
         bonus: result.speed_bonus,
         rank: result.entry.rank,
         leaderboard,
+        breakdown: result.breakdown ?? [],
       })
       setActiveBattle(null)
       void reload()
@@ -357,6 +362,60 @@ export default function BossBattlesPage() {
                 Dismiss
               </button>
             </div>
+            {lastResult.breakdown.length > 0 && (
+              <div className="space-y-1.5">
+                <CardLabel className="block uppercase">Answer breakdown</CardLabel>
+                <ol className="space-y-1.5">
+                  {lastResult.breakdown.map((row, i) => (
+                    <li
+                      key={row.question_id}
+                      className={clsx(
+                        'flex items-start gap-3 text-sm py-2 px-3 rounded-md border',
+                        row.is_correct
+                          ? 'bg-success/5 border-success/20'
+                          : 'bg-danger/5 border-danger/20',
+                      )}
+                    >
+                      <span
+                        className={clsx(
+                          'shrink-0 w-5 h-5 rounded-full flex items-center justify-center mt-0.5',
+                          row.is_correct ? 'bg-success/20 text-success' : 'bg-danger/20 text-danger',
+                        )}
+                      >
+                        {row.is_correct ? <Check className="h-3 w-3" /> : <X className="h-3 w-3" />}
+                      </span>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-[var(--text-primary)] leading-snug">
+                          <span className="font-mono text-[var(--text-tertiary)] text-xs mr-2">
+                            Q{i + 1}
+                          </span>
+                          {row.question}
+                        </p>
+                        {!row.is_correct && (
+                          <p className="text-xs text-[var(--text-tertiary)] mt-1">
+                            {row.student_answer ? (
+                              <>
+                                Your answer:{' '}
+                                <span className="line-through">{row.student_answer}</span>
+                                {' · '}
+                                Correct:{' '}
+                                <span className="text-success font-medium">{row.correct_answer}</span>
+                              </>
+                            ) : (
+                              <>
+                                Skipped · Correct:{' '}
+                                <span className="text-success font-medium">{row.correct_answer}</span>
+                              </>
+                            )}
+                          </p>
+                        )}
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
+
             {lastResult.leaderboard.length > 0 && (
               <div className="space-y-1.5">
                 <CardLabel className="block uppercase">Top performers</CardLabel>
