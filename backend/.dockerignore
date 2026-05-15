@@ -1,0 +1,16 @@
+# Don't bundle test artifacts, caches, or the dev venv into the image.
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+.venv
+.env
+.env.*
+*.db
+*.db-shm
+*.db-wal
+uploads/audio/
+.DS_Store
+
+# Keep .env.example so the deployer sees the expected shape.
+!.env.example

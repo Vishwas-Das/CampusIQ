@@ -1,0 +1,33 @@
+# Local dev parity for the hosted Render setup.
+#
+# Use cases:
+#   - One-command `docker compose up backend` to verify the production
+#     image builds and boots cleanly before pushing to Render.
+#   - Sanity-check the Alembic-on-startup behavior in isolation.
+#
+# The frontend stays out of compose — keep `npm run dev` on the host so
+# Vite HMR still works against your editor.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: campusiq-backend:local
+    container_name: campusiq-backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    # Mount the local app/ on top of the image for fast iteration. Remove
+    # this `volumes` block to test the image exactly as Render will run it.
+    volumes:
+      - ./backend/app:/app/app:cached
+      - ./backend/uploads:/app/uploads
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request, sys; sys.exit(0 if urllib.request.urlopen(\"http://127.0.0.1:8000/health\").status == 200 else 1)'"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s

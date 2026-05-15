@@ -1,0 +1,72 @@
+# Render Blueprint for the CampusIQ backend.
+#
+# Deployment flow:
+#   1. Push this repo to GitHub.
+#   2. In Render → New → Blueprint → connect the repo.
+#   3. Render reads this file and creates the Web Service below.
+#   4. Fill in the env-var values marked `sync: false` in the Render UI.
+#   5. Once the service goes live, set Vercel's VITE_API_BASE_URL to
+#      `https://<service-name>.onrender.com/api/v1` and redeploy the
+#      frontend.
+#
+# Frontend stays on Vercel (already configured via frontend/vercel.json).
+# Database stays on Supabase (free tier — keep an UptimeRobot ping on
+# /health every 10 min to prevent the project from auto-pausing).
+
+services:
+  - type: web
+    name: campusiq-backend
+    runtime: docker
+    plan: starter  # $7/mo always-on. Free tier sleeps after 15min — bad for live demo.
+    region: singapore  # closest to RVCE; Supabase is in ap-south-1.
+    dockerfilePath: backend/Dockerfile
+    dockerContext: backend
+    healthCheckPath: /health
+    autoDeploy: true
+
+    envVars:
+      # Required — set these in the Render dashboard, NEVER commit them.
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+
+      # Optional vendor keys — leave unset to let the frontend fall back
+      # to browser SpeechRecognition + speechSynthesis (free, robotic).
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ELEVENLABS_API_KEY
+        sync: false
+
+      # CORS — include the Vercel domain(s) that will host the frontend.
+      # Set in dashboard so we don't bake a domain into the repo.
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+
+      # Defaults safe to bake in.
+      - key: ENVIRONMENT
+        value: production
+      - key: USE_PRODUCTION_MODEL
+        value: "False"  # flip to "True" on demo day only
+      - key: ANTHROPIC_MODEL_DEV
+        value: claude-haiku-4-5-20251001
+      - key: ANTHROPIC_MODEL_PROD
+        value: claude-opus-4-6
+      - key: JWT_ALGORITHM
+        value: HS256
+      - key: JWT_EXPIRE_MINUTES
+        value: "10080"
+      - key: AUDIO_RETENTION_DAYS
+        value: "7"
+      - key: AUDIO_CLEANUP_INTERVAL_HOURS
+        value: "6"
+      - key: SUPABASE_URL
+        value: https://zngdzrdselzflvfriznc.supabase.co
+      - key: SUPABASE_STORAGE_BUCKET
+        value: campusiq-documents
