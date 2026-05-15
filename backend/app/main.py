@@ -63,14 +63,21 @@ async def lifespan(_: FastAPI):
         logger.exception("startup audio purge failed")
 
     cleanup_task = asyncio.create_task(_audio_cleanup_loop(), name="audio-cleanup")
+
+    # Phase 21 — start the TCP-style notification retry loop. Cancellable
+    # via `stop_retry_loop()` for clean shutdown.
+    retry_task = notifications_service.start_retry_loop(asyncio.get_running_loop())
+
     try:
         yield
     finally:
         cleanup_task.cancel()
-        try:
-            await cleanup_task
-        except asyncio.CancelledError:
-            pass
+        notifications_service.stop_retry_loop()
+        for task in (cleanup_task, retry_task):
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
 
 def create_application() -> FastAPI:

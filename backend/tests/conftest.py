@@ -53,7 +53,21 @@ def engine(app_test_db_path: Path):
     import app.models  # noqa: F401
 
     Base.metadata.create_all(eng)
+
+    # Repoint `app.core.database.SessionLocal` at the test engine so
+    # background workers (e.g. notifications._retry_loop_tick) that
+    # build their own session via `SessionLocal()` see the test tables
+    # instead of the dummy DB the production module bound at import.
+    from app.core import database as core_db
+
+    original_factory = core_db.SessionLocal
+    core_db.SessionLocal = sessionmaker(
+        bind=eng, autoflush=False, autocommit=False, future=True
+    )
+
     yield eng
+
+    core_db.SessionLocal = original_factory
     eng.dispose()
 
 

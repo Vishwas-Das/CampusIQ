@@ -1,13 +1,17 @@
-"""Real-time notifications (Phase 9).
+"""Real-time notifications (Phase 9 + Phase 21 reliability layer).
 
-A small WebSocket connection registry + a `publish` helper that other
-endpoints can call after they've completed their work. Connections are
-authenticated via a JWT passed as a `?token=` query parameter (browsers can't
-add Authorization headers to WebSocket handshakes).
+A WebSocket connection registry + a `publish` helper that other endpoints
+call after they've completed their work. Connections are authenticated
+via a JWT passed as a `?token=` query parameter (browsers can't add
+Authorization headers to WebSocket handshakes).
 
-Persists every notification to `NotificationDelivery` so we keep history even
-when the client isn't currently connected. The TCP-style `sequence_number`
-column is incremented per-user.
+Persistence: every notification writes a `NotificationDelivery` row with a
+per-user `sequence_number`. The retry/ACK layer (Phase 21) treats this
+table as a TCP-style outbox — clients ACK by id, the background retry
+loop re-pushes SENT-but-unacked rows on exponential backoff (1, 2, 4,
+8 s) until they're ACKED or fall over to FAILED after `MAX_RETRIES`
+retries. PENDING rows (never delivered because the user had no open
+socket at publish time) get drained the moment a socket appears.
 """
 from __future__ import annotations
 
@@ -28,6 +32,18 @@ from app.models.algorithm import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ── Retry / ACK tunables ──────────────────────────────────────────────
+# Mirrors the language in the admin "How TCP-Style Delivery Works" card:
+# backoff goes 1, 2, 4, 8 seconds, capped at MAX_RETRIES retries.
+MAX_RETRIES = 3
+RETRY_BASE_SECONDS = 1.0
+RETRY_MAX_BACKOFF_SECONDS = 60.0
+RETRY_SCAN_INTERVAL_SECONDS = 1.5
+# Safety cap on rows per scan so a flood of unacked notifications can't
+# starve other work.
+RETRY_SCAN_BATCH_LIMIT = 200
 
 
 # Captured at app startup so sync DB-handler threads can still dispatch sends
@@ -216,3 +232,221 @@ def publish_sync(
         row.status = NotificationStatus.SENT
         row.last_sent_at = datetime.now(tz=timezone.utc)
     return row
+
+
+# ── ACK + retry mechanics (Phase 21) ──────────────────────────────────
+
+
+def ack_notification(
+    db: Session, *, user_id: uuid.UUID, notification_id: uuid.UUID
+) -> bool:
+    """Mark a notification ACKED on behalf of its owning user.
+
+    Returns True if the row was found and is owned by this user. The
+    operation is idempotent — re-ACKing an already-ACKED row is a no-op
+    that still returns True so the client never sees a spurious failure.
+    """
+    row = db.get(NotificationDelivery, notification_id)
+    if row is None:
+        return False
+    if row.user_id != user_id:
+        return False
+    if row.status == NotificationStatus.ACKED:
+        return True
+    row.status = NotificationStatus.ACKED
+    row.acked_at = datetime.now(tz=timezone.utc)
+    db.commit()
+    return True
+
+
+def _compute_backoff_seconds(retry_count: int) -> float:
+    """Exponential backoff schedule: 1, 2, 4, 8 ... capped."""
+    if retry_count < 0:
+        return RETRY_BASE_SECONDS
+    delay = RETRY_BASE_SECONDS * (2 ** retry_count)
+    return min(delay, RETRY_MAX_BACKOFF_SECONDS)
+
+
+def _as_utc(dt: datetime) -> datetime:
+    """SQLite doesn't preserve tz info — coerce naive timestamps to UTC."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _is_due_for_retry(row: NotificationDelivery, now: datetime) -> bool:
+    """SENT-but-unacked rows are due once `last_sent_at + backoff` is past."""
+    if row.last_sent_at is None:
+        return True
+    elapsed = (now - _as_utc(row.last_sent_at)).total_seconds()
+    return elapsed >= _compute_backoff_seconds(row.retry_count)
+
+
+def _payload_for_row(row: NotificationDelivery) -> dict[str, Any]:
+    return {
+        "id": str(row.id),
+        "type": row.notification_type.value,
+        "title": row.title,
+        "content": row.content,
+        "sequence_number": row.sequence_number,
+        "retry_count": row.retry_count,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+async def _retry_loop_tick() -> dict[str, int]:
+    """One scan tick: deliver PENDING rows + retry SENT-but-unacked rows.
+
+    Returns a small dict of counters for logging/tests. Each tick uses
+    its own DB session so the background loop never piggybacks on a
+    request-scoped session.
+    """
+    # Lazy import to dodge the circular dependency between this module
+    # (imported eagerly by route modules at startup) and the engine setup.
+    from app.core.database import SessionLocal
+
+    counters = {"pending_drained": 0, "retried": 0, "failed": 0, "acked_skip": 0}
+    now = datetime.now(tz=timezone.utc)
+    with SessionLocal() as db:
+        rows = list(
+            db.scalars(
+                select(NotificationDelivery)
+                .where(
+                    NotificationDelivery.status.in_(
+                        [NotificationStatus.PENDING, NotificationStatus.SENT]
+                    )
+                )
+                .order_by(NotificationDelivery.created_at.asc())
+                .limit(RETRY_SCAN_BATCH_LIMIT)
+            )
+        )
+
+        for row in rows:
+            sockets = manager.connections_for(row.user_id)
+
+            if row.status == NotificationStatus.PENDING:
+                if not sockets:
+                    # Wait for the user to come online; don't bump retry_count.
+                    continue
+                delivered = await _push_payload_to_user(
+                    row.user_id, _payload_for_row(row)
+                )
+                if delivered:
+                    row.status = NotificationStatus.SENT
+                    row.last_sent_at = now
+                    counters["pending_drained"] += 1
+                continue
+
+            # status == SENT (awaiting ACK)
+            if not _is_due_for_retry(row, now):
+                continue
+            if row.retry_count >= MAX_RETRIES:
+                # We've already used every retry; give up.
+                row.status = NotificationStatus.FAILED
+                counters["failed"] += 1
+                continue
+            delivered = (
+                await _push_payload_to_user(row.user_id, _payload_for_row(row))
+                if sockets
+                else False
+            )
+            row.retry_count += 1
+            if delivered:
+                row.last_sent_at = now
+            counters["retried"] += 1
+
+        db.commit()
+    return counters
+
+
+# Module-level holders so tests can call cancel() deterministically.
+_retry_task: asyncio.Task | None = None
+_retry_loop_started = False
+
+
+async def retry_loop() -> None:
+    """Forever loop: re-deliver pending/unacked notifications.
+
+    Cancellable via `task.cancel()`. Sleeps `RETRY_SCAN_INTERVAL_SECONDS`
+    between ticks. Any per-tick exception is logged and swallowed so a
+    single bad row never kills the loop.
+    """
+    logger.info(
+        "notification retry loop starting (scan=%ss, max_retries=%s)",
+        RETRY_SCAN_INTERVAL_SECONDS,
+        MAX_RETRIES,
+    )
+    while True:
+        try:
+            await _retry_loop_tick()
+        except Exception:  # noqa: BLE001
+            logger.exception("notification retry tick failed")
+        try:
+            await asyncio.sleep(RETRY_SCAN_INTERVAL_SECONDS)
+        except asyncio.CancelledError:
+            return
+
+
+def start_retry_loop(loop: asyncio.AbstractEventLoop) -> asyncio.Task:
+    """Schedule `retry_loop()` on the given event loop. Idempotent within
+    a process — calling this twice without a prior cancellation returns the
+    existing task."""
+    global _retry_task, _retry_loop_started
+    if _retry_task is not None and not _retry_task.done():
+        return _retry_task
+    _retry_task = loop.create_task(retry_loop(), name="notification-retry")
+    _retry_loop_started = True
+    return _retry_task
+
+
+def stop_retry_loop() -> asyncio.Task | None:
+    """Cancel the running retry loop, if any. Returns the cancelled task so
+    the caller can `await` it for clean shutdown."""
+    global _retry_task
+    task = _retry_task
+    if task is not None and not task.done():
+        task.cancel()
+    _retry_task = None
+    return task
+
+
+# ── Admin queries (Phase 21) ──────────────────────────────────────────
+
+
+def list_delivery_rows(
+    db: Session, *, limit: int = 50, offset: int = 0
+) -> list[NotificationDelivery]:
+    """Latest rows first, capped at `limit`. Used by the admin status page."""
+    return list(
+        db.scalars(
+            select(NotificationDelivery)
+            .order_by(NotificationDelivery.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+    )
+
+
+def compute_delivery_stats(db: Session) -> dict[str, int | float]:
+    """Aggregate counters for the admin status page header."""
+    counts_by_status: dict[NotificationStatus, int] = {
+        status: 0 for status in NotificationStatus
+    }
+    rows = db.execute(
+        select(NotificationDelivery.status, func.count())
+        .group_by(NotificationDelivery.status)
+    ).all()
+    for status, count in rows:
+        counts_by_status[status] = int(count)
+    total = sum(counts_by_status.values())
+    acked = counts_by_status[NotificationStatus.ACKED]
+    delivered = acked + counts_by_status[NotificationStatus.SENT]
+    rate = (delivered / total * 100.0) if total else 0.0
+    return {
+        "total": total,
+        "pending": counts_by_status[NotificationStatus.PENDING],
+        "sent": counts_by_status[NotificationStatus.SENT],
+        "acked": acked,
+        "failed": counts_by_status[NotificationStatus.FAILED],
+        "delivery_rate_percent": round(rate, 2),
+    }
