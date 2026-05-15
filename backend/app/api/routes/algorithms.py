@@ -30,7 +30,13 @@ from app.schemas.algorithms import (
     SkillSetCount,
     StudyTaskResponse,
 )
-from app.services import backtracking_schedule, graph_coloring, hamming, inclusion_exclusion
+from app.services import (
+    backtracking_schedule,
+    graph_coloring,
+    hamming,
+    inclusion_exclusion,
+    spread_schedule,
+)
 
 router = APIRouter()
 
@@ -124,7 +130,7 @@ def run_graph_coloring(
 @router.post(
     "/schedule/generate",
     response_model=GenerateScheduleResponse,
-    summary="Branch-and-bound study schedule for the next N days",
+    summary="Study schedule for the next N days (spread by default, B&B for crash mode)",
 )
 def generate_schedule(
     data: GenerateScheduleRequest,
@@ -140,7 +146,14 @@ def generate_schedule(
         )
         for t in data.tasks
     ]
-    result = backtracking_schedule.generate_schedule(tasks, days=data.days)
+    if data.strategy == "backtracking":
+        result = backtracking_schedule.generate_schedule(tasks, days=data.days)
+    else:
+        result = spread_schedule.generate_spread_schedule(
+            tasks,
+            days=data.days,
+            daily_cap_hours=data.daily_cap_hours,
+        )
     return GenerateScheduleResponse(
         slots=[ScheduleSlotResponse(**asdict(s)) for s in result.slots],
         scheduled_tasks=[StudyTaskResponse(**asdict(t)) for t in result.scheduled_tasks],

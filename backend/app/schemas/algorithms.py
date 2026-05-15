@@ -108,6 +108,17 @@ class GenerateScheduleResponse(BaseModel):
     explored_nodes: int
 
 
+ScheduleStrategyLiteral = Literal["spread", "backtracking"]
+
+
 class GenerateScheduleRequest(BaseModel):
     tasks: list[StudyTaskInput] = Field(..., min_length=1, max_length=15)
     days: int = Field(7, ge=1, le=14)
+    # `spread` (default) is the realistic round-robin planner that spaces
+    # tasks across the week and caps each day's load. `backtracking` is the
+    # branch-and-bound packer used by Crash Mode where cramming under a
+    # tight deadline is the point.
+    strategy: ScheduleStrategyLiteral = "spread"
+    # Maximum study hours per day for the spread strategy. Defaults to 3
+    # server-side when omitted. Ignored for the backtracking strategy.
+    daily_cap_hours: int | None = Field(default=None, ge=1, le=8)
