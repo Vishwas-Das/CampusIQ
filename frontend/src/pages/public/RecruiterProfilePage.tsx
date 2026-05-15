@@ -156,7 +156,9 @@ export default function RecruiterProfilePage() {
       <div
         style={{
           minHeight: '100vh',
-          padding: '48px 24px 80px',
+          // Tighter horizontal padding on narrow viewports so QR-scanned
+          // phone visits don't waste a third of the screen on margins.
+          padding: 'clamp(28px, 5vw, 48px) clamp(14px, 4vw, 24px) 80px',
           position: 'relative',
         }}
       >
