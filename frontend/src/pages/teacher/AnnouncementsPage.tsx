@@ -10,10 +10,10 @@ import Select from '../../components/ui/Select'
 import { ApiError, announcementsApi, subjectsApi } from '../../api/client'
 import type { Announcement, AnnouncementTarget, Subject } from '../../types'
 
-const stagger: Variants = { animate: { transition: { staggerChildren: 0.05 } } }
+const stagger: Variants = { animate: { transition: { staggerChildren: 0 } } }
 const fadeUp: Variants = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] } },
+  initial: { opacity: 0, y: 0 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.1, ease: [0.25, 0.46, 0.45, 0.94] } },
 }
 
 function formatDate(iso: string): string {
@@ -261,7 +261,7 @@ export default function AnnouncementsPage() {
         items.map((ann, i) => (
           <motion.div
             key={ann.id}
-            initial={{ opacity: 0, y: 16 }}
+            initial={{ opacity: 0, y: 0 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.1 + i * 0.05, duration: 0.3 }}
           >

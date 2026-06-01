@@ -9,10 +9,10 @@ import StatCard from '../../components/dashboard/StatCard'
 import { ApiError, algorithmsApi } from '../../api/client'
 import type { InclusionExclusionResponse } from '../../types'
 
-const stagger: Variants = { animate: { transition: { staggerChildren: 0.05 } } }
+const stagger: Variants = { animate: { transition: { staggerChildren: 0 } } }
 const fadeUp: Variants = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] } },
+  initial: { opacity: 0, y: 0 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.1, ease: [0.25, 0.46, 0.45, 0.94] } },
 }
 
 export default function SkillAnalyticsPage() {

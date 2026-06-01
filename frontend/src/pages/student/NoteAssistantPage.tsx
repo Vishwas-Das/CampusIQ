@@ -28,7 +28,7 @@ import type {
 } from '../../types'
 
 const fadeUp: Variants = {
-  initial: { opacity: 0, y: 8 },
+  initial: { opacity: 0, y: 0 },
   animate: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 }
 

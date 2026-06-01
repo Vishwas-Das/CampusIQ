@@ -24,10 +24,10 @@ import type {
   StudentPerformanceRow,
 } from '../../types'
 
-const stagger: Variants = { animate: { transition: { staggerChildren: 0.04 } } }
+const stagger: Variants = { animate: { transition: { staggerChildren: 0 } } }
 const fadeUp: Variants = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] } },
+  initial: { opacity: 0, y: 0 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.1, ease: [0.25, 0.46, 0.45, 0.94] } },
 }
 
 function getScoreColor(score: number): string {
@@ -231,7 +231,7 @@ export default function StudentDetailsPage() {
                         'border-b border-[var(--border-default)] last:border-b-0 cursor-pointer hover:bg-[var(--bg-tertiary)]/40',
                         s.student_id === selectedId && 'bg-primary/5',
                       )}
-                      initial={{ opacity: 0 }}
+                      initial={{ opacity: 1 }}
                       animate={{ opacity: 1 }}
                       transition={{ delay: 0.05 + Math.min(i, 12) * 0.02 }}
                       onClick={() => setSelectedId(s.student_id)}

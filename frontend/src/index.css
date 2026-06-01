@@ -12,12 +12,13 @@
     --bg-secondary: #EFEEEC;
     --bg-tertiary: #E8E7E5;
     --bg-elevated: #FFFFFF;
-    --bg-sidebar: #171717;
-    --sidebar-text: #A0A0A0;
-    --sidebar-text-active: #ECECEC;
-    --sidebar-border: #262626;
-    --sidebar-hover: #1F1F1F;
-    --sidebar-active: #222222;
+    /* Sidebar follows the light surface so the whole app feels consistent. */
+    --bg-sidebar: #FFFFFF;
+    --sidebar-text: #555555;
+    --sidebar-text-active: #0C0C0C;
+    --sidebar-border: #E8E7E5;
+    --sidebar-hover: #EFEEEC;
+    --sidebar-active: #E8E7E5;
     --border-default: #D8D8D4;
     --border-subtle: #E8E7E5;
     --border-strong: #C0BFBB;

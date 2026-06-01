@@ -1,9 +1,10 @@
-import { Bell, Search, Flame, Sparkles, Sun, Moon } from 'lucide-react'
+import { Bell, Search, Flame, Monitor, Sparkles, Sun, Moon } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { useTheme } from '../../hooks/useTheme'
 import type { Theme } from '../../types'
 
 const themeIcons: Record<Theme, LucideIcon> = {
+  system: Monitor,
   nebula: Sparkles,
   light: Sun,
   dark: Moon,

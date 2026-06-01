@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { MotionConfig } from 'framer-motion'
 import './index.css'
 import App from './App'
 
@@ -10,6 +11,8 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <App />
+    <MotionConfig reducedMotion="always" transition={{ duration: 0 }}>
+      <App />
+    </MotionConfig>
   </StrictMode>,
 )

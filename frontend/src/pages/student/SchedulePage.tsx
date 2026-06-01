@@ -20,10 +20,10 @@ import type {
 
 // ── Animation ───────────────────────────────────────────────────
 
-const stagger: Variants = { animate: { transition: { staggerChildren: 0.05 } } }
+const stagger: Variants = { animate: { transition: { staggerChildren: 0 } } }
 const fadeUp: Variants = {
-  initial: { opacity: 0, y: 14 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] } },
+  initial: { opacity: 0, y: 0 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.1, ease: [0.25, 0.46, 0.45, 0.94] } },
 }
 
 // ── Domain ──────────────────────────────────────────────────────
@@ -635,7 +635,7 @@ function WeeklyGrid({
               {!b.isLocked && b.subjectCode && (
                 <span
                   className="text-[10px] font-mono uppercase tracking-wider self-end"
-                  style={{ color: tone.ring, opacity: 0.85 }}
+                  style={{ color: tone.ring, opacity: 1.85 }}
                 >
                   {b.subjectCode}
                 </span>

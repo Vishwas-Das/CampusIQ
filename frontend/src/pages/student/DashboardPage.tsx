@@ -27,7 +27,7 @@ import type { DashboardResponse } from '../../types'
 const fadeUpInitial = { y: 16 }
 const fadeUpAnimate = (delay: number) => ({
   y: 0,
-  transition: { duration: 0.4, delay, ease: [0.25, 0.46, 0.45, 0.94] as const },
+  transition: { duration: 0.1, delay, ease: [0.25, 0.46, 0.45, 0.94] as const },
 })
 
 interface PillarRow {
@@ -165,7 +165,7 @@ export default function DashboardPage() {
               key={stat.label}
               initial={{ y: 20, scale: 0.95 }}
               animate={{ y: 0, scale: 1 }}
-              transition={{ delay: 0.1 + i * 0.06, duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] }}
+              transition={{ delay: 0.1 + i * 0.06, duration: 0.1, ease: [0.25, 0.46, 0.45, 0.94] }}
             >
               <StatCard {...stat} className="glow-border" />
             </motion.div>
@@ -255,7 +255,7 @@ export default function DashboardPage() {
         className="w-72 shrink-0 space-y-6"
         initial={{ x: 20 }}
         animate={{ x: 0 }}
-        transition={{ delay: 0.3, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
+        transition={{ delay: 0, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] }}
       >
         <Card className="glow-border">
           <CardLabel className="mb-3 block">RECENT ACTIVITY</CardLabel>

@@ -7,12 +7,12 @@ import Badge from '../../components/ui/Badge'
 import StatCard from '../../components/dashboard/StatCard'
 
 const stagger: Variants = {
-  animate: { transition: { staggerChildren: 0.05 } },
+  animate: { transition: { staggerChildren: 0 } },
 }
 
 const fadeUp: Variants = {
-  initial: { opacity: 0, y: 16 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.4, ease: [0.25, 0.46, 0.45, 0.94] } },
+  initial: { opacity: 0, y: 0 },
+  animate: { opacity: 1, y: 0, transition: { duration: 0.1, ease: [0.25, 0.46, 0.45, 0.94] } },
 }
 
 type NotificationStatus = 'Acked' | 'Sent' | 'Failed'
@@ -113,7 +113,7 @@ export default function NotificationStatusPage() {
                   <motion.tr
                     key={`${n.recipient}-${n.type}`}
                     className="border-b border-[var(--border-default)] last:border-b-0"
-                    initial={{ opacity: 0 }}
+                    initial={{ opacity: 1 }}
                     animate={{ opacity: 1 }}
                     transition={{ delay: 0.15 + i * 0.04 }}
                   >

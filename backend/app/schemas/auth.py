@@ -50,6 +50,40 @@ class LoginRequest(BaseModel):
     password: str = Field(..., min_length=1, max_length=128)
 
 
+class PasswordChangeRequest(BaseModel):
+    """Body for PATCH /auth/me/password."""
+
+    current_password: str = Field(..., min_length=1, max_length=128)
+    new_password: str = Field(..., min_length=8, max_length=128)
+
+    @field_validator("new_password")
+    @classmethod
+    def password_strength(cls, v: str) -> str:
+        if v.isdigit() or v.isalpha():
+            raise ValueError("Password must contain letters and numbers")
+        return v
+
+
+class StudentProfileUpdate(BaseModel):
+    """Partial update for /auth/me/profile. All fields optional — only the
+    keys actually present in the request body are written."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    branch: str | None = Field(None, max_length=100)
+    semester: int | None = Field(None, ge=1, le=8)
+    cgpa: float | None = Field(None, ge=0, le=10)
+    github_url: str | None = Field(None, max_length=500)
+    linkedin_url: str | None = Field(None, max_length=500)
+    skills: list[str] | None = None
+    target_companies: list[str] | None = None
+    target_role: str | None = Field(None, max_length=100)
+
+
+class SimpleMessage(BaseModel):
+    detail: str
+
+
 class TokenResponse(BaseModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"

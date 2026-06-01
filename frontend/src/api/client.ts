@@ -202,11 +202,32 @@ export const api = {
 
 // ── Auth-specific API calls ──
 
+export interface PasswordChangeRequest {
+  current_password: string
+  new_password: string
+}
+
+export interface StudentProfileUpdate {
+  branch?: string | null
+  semester?: number | null
+  cgpa?: number | null
+  github_url?: string | null
+  linkedin_url?: string | null
+  skills?: string[] | null
+  target_companies?: string[] | null
+  target_role?: string | null
+}
+
 export const authApi = {
   signup: (data: SignupRequest) => api.post<TokenResponse>('/auth/signup', data),
   login: (email: string, password: string) =>
     api.post<TokenResponse>('/auth/login', { email, password } satisfies LoginRequest),
   me: () => api.get<User>('/auth/me'),
+  changePassword: (data: PasswordChangeRequest) =>
+    api.patch<{ detail: string }>('/auth/me/password', data),
+  updateProfile: (data: StudentProfileUpdate) =>
+    api.patch<User>('/auth/me/profile', data),
+  deleteAccount: () => api.delete<void>('/auth/me'),
 }
 
 // ── Subject CRUD ──

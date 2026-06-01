@@ -114,6 +114,55 @@ def login(db: Session, data: LoginRequest) -> TokenResponse:
     return _build_token_response(user)
 
 
+def change_password(db: Session, user: User, current: str, new: str) -> None:
+    """Verify current password, then store hash of new one."""
+    if not verify_password(current, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Current password is incorrect",
+        )
+    if verify_password(new, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="New password must be different from the current one",
+        )
+    user.hashed_password = hash_password(new)
+    db.commit()
+
+
+def update_student_profile(db: Session, user: User, updates: dict) -> User:
+    """Patch the StudentProfile row for this user. Students only.
+
+    `updates` is a dict of field → value (only keys present are written;
+    None values explicitly clear the column).
+    """
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Academic profile is only for student accounts",
+        )
+    if user.student_profile is None:
+        # Defensive — signup should have created it. Create on-the-fly if missing.
+        from app.models.user import StudentProfile
+        profile = StudentProfile(user_id=user.id)
+        db.add(profile)
+        db.flush()
+        user.student_profile = profile
+
+    for field, value in updates.items():
+        setattr(user.student_profile, field, value)
+    db.commit()
+    return get_user_by_id(db, user.id)
+
+
+def deactivate_account(db: Session, user: User) -> None:
+    """Soft-delete: mark the user inactive. Preserves their content for
+    teacher analytics / community continuity. Inactive users cannot log in
+    (login() raises 403 when is_active is False)."""
+    user.is_active = False
+    db.commit()
+
+
 def _build_token_response(user: User) -> TokenResponse:
     """Create the JWT + wrap in a TokenResponse."""
     from app.core.config import get_settings

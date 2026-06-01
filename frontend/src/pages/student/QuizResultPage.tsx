@@ -15,9 +15,9 @@ import Button from '../../components/ui/Button'
 import ProgressBar from '../../components/ui/ProgressBar'
 import type { QuizAttemptResponse } from '../../types'
 
-const stagger: Variants = { animate: { transition: { staggerChildren: 0.05 } } }
+const stagger: Variants = { animate: { transition: { staggerChildren: 0 } } }
 const fadeUp: Variants = {
-  initial: { opacity: 0, y: 12 },
+  initial: { opacity: 0, y: 0 },
   animate: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 }
 

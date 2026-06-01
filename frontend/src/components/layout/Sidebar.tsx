@@ -192,7 +192,7 @@ export default function Sidebar({ role = 'student', collapsed, onToggle, user }:
       {/* Bottom */}
       <div className="border-t border-[var(--sidebar-border)] p-2 space-y-1 shrink-0">
         <NavLink
-          to="/settings"
+          to={`/${role}/settings`}
           className={({ isActive }) =>
             clsx(
               'flex items-center gap-3 rounded-lg transition-colors',
