@@ -506,7 +506,7 @@ def get_student_detail(
     # Community contributions = answers posted by this student.
     community_contributions = (
         db.scalar(
-            select(func.count(DoubtAnswer.id)).where(DoubtAnswer.author_id == student_id)
+            select(func.count(DoubtAnswer.id)).where(DoubtAnswer.answered_by_id == student_id)
         )
         or 0
     )
