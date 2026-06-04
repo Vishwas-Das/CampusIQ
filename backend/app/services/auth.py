@@ -155,6 +155,25 @@ def update_student_profile(db: Session, user: User, updates: dict) -> User:
     return get_user_by_id(db, user.id)
 
 
+def update_teacher_profile(db: Session, user: User, updates: dict) -> User:
+    """Patch the TeacherProfile row for this user. Teachers only."""
+    if user.role != UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Teacher profile is only for teacher accounts",
+        )
+    if user.teacher_profile is None:
+        profile = TeacherProfile(user_id=user.id)
+        db.add(profile)
+        db.flush()
+        user.teacher_profile = profile
+
+    for field, value in updates.items():
+        setattr(user.teacher_profile, field, value)
+    db.commit()
+    return get_user_by_id(db, user.id)
+
+
 def deactivate_account(db: Session, user: User) -> None:
     """Soft-delete: mark the user inactive. Preserves their content for
     teacher analytics / community continuity. Inactive users cannot log in

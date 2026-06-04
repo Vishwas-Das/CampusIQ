@@ -80,6 +80,15 @@ class StudentProfileUpdate(BaseModel):
     target_role: str | None = Field(None, max_length=100)
 
 
+class TeacherProfileUpdate(BaseModel):
+    """Partial update for /auth/me/teacher-profile. Teacher-only."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    department_name: str | None = Field(None, max_length=255)
+    designation: str | None = Field(None, max_length=255)
+
+
 class SimpleMessage(BaseModel):
     detail: str
 

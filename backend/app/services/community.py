@@ -1,13 +1,13 @@
 """Peer Doubt Community service (Phase 17, F4).
 
-Students post doubts → peers answer → upvotes + accepted answers.
+Two channels:
+- **Public** (PUBLIC visibility) — Discord-style class feed. Students post, peers
+  answer, AI fills in after 10 min if no one replies.
+- **Private** (PRIVATE visibility) — WhatsApp-style DM to one teacher. Only the
+  doubt's author + the assigned teacher can see/answer. No AI fallback.
 
-**AI fallback**: when a doubt has zero human answers and has been sitting
-for ≥ `AI_FALLBACK_DELAY_MINUTES` minutes, the next time anyone opens the
-doubt via `get_doubt()` we generate a Claude-backed answer and persist it
-as an AI-authored answer. This keeps the fallback lazy (no background
-scheduler needed) and only costs Claude calls for doubts that are actually
-being read.
+Option B (current): a student can DM only teachers whose subjects they've
+already engaged with (quiz attempts or prior doubts).
 """
 from __future__ import annotations
 
@@ -16,13 +16,15 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
-from sqlalchemy import func as sqlfunc, select
+from sqlalchemy import distinct, func as sqlfunc, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.community import Doubt, DoubtAnswer
+from app.models.community import Doubt, DoubtAnswer, DoubtVisibility
 from app.models.gamification import XPEventType
+from app.models.quiz import Quiz, QuizAttempt
 from app.models.user import Subject, User, UserRole
 from app.schemas.community import (
+    AccessibleTeacher,
     DoubtAnswerCreate,
     DoubtAnswerResponse,
     DoubtCreate,
@@ -52,8 +54,32 @@ def _require_student(user: User) -> None:
     if user.role != UserRole.STUDENT:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="The peer community is only available to students.",
+            detail="Only students can post to the community.",
         )
+
+
+def _can_view_doubt(user: User, doubt: Doubt) -> bool:
+    """Permission check: who can view this doubt?"""
+    if doubt.visibility == DoubtVisibility.PUBLIC:
+        return True
+    # Private: author + assigned teacher only.
+    if doubt.student_id == user.id:
+        return True
+    if doubt.assigned_teacher_id is not None and doubt.assigned_teacher_id == user.id:
+        return True
+    return False
+
+
+def _can_answer_doubt(user: User, doubt: Doubt) -> bool:
+    """Permission check: who can answer this doubt?"""
+    if doubt.visibility == DoubtVisibility.PUBLIC:
+        return user.role == UserRole.STUDENT
+    # Private DM: author (clarification) + assigned teacher.
+    if doubt.student_id == user.id:
+        return True
+    if doubt.assigned_teacher_id is not None and doubt.assigned_teacher_id == user.id:
+        return True
+    return False
 
 
 def _to_answer_response(
@@ -64,6 +90,7 @@ def _to_answer_response(
         doubt_id=answer.doubt_id,
         answered_by_id=answer.answered_by_id,
         answered_by_name=(author.full_name if author else None),
+        answered_by_role=(author.role.value if author else None),
         answer_text=answer.answer_text,
         is_ai_generated=answer.is_ai_generated,
         is_accepted=answer.is_accepted,
@@ -77,6 +104,7 @@ def _to_doubt_response(
     *,
     author: User | None,
     subject: Subject | None,
+    assigned_teacher: User | None,
     answer_count: int,
     has_ai_answer: bool,
 ) -> DoubtResponse:
@@ -86,6 +114,9 @@ def _to_doubt_response(
         student_name=(author.full_name if author else None),
         subject_id=doubt.subject_id,
         subject_code=(subject.code if subject else None),
+        visibility=doubt.visibility.value,
+        assigned_teacher_id=doubt.assigned_teacher_id,
+        assigned_teacher_name=(assigned_teacher.full_name if assigned_teacher else None),
         title=doubt.title,
         body=doubt.body,
         tags=list(doubt.tags or []),
@@ -99,6 +130,66 @@ def _to_doubt_response(
 
 
 # ════════════════════════════════════════════════════════════════
+# Accessible teachers (Option B): student → list of teachers they can DM
+# ════════════════════════════════════════════════════════════════
+
+def get_accessible_teachers(db: Session, student: User) -> list[AccessibleTeacher]:
+    """Per Option B: a student can DM teachers whose subjects they have
+    activity in. Activity = quiz attempts on quizzes that teacher created,
+    OR prior doubts posted under that teacher's subject.
+    """
+    if student.role != UserRole.STUDENT:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only students see the accessible-teachers list.",
+        )
+
+    quiz_subject_ids = list(db.scalars(
+        select(distinct(Quiz.subject_id))
+        .join(QuizAttempt, QuizAttempt.quiz_id == Quiz.id)
+        .where(QuizAttempt.student_id == student.id)
+    ).all())
+
+    doubt_subject_ids = list(db.scalars(
+        select(distinct(Doubt.subject_id))
+        .where(Doubt.student_id == student.id)
+        .where(Doubt.subject_id.is_not(None))
+    ).all())
+
+    subject_ids = {sid for sid in (quiz_subject_ids + doubt_subject_ids) if sid is not None}
+    if not subject_ids:
+        return []
+
+    rows = db.execute(
+        select(User, Subject)
+        .join(Subject, Subject.teacher_id == User.id)
+        .where(Subject.id.in_(subject_ids))
+        .where(User.role == UserRole.TEACHER)
+        .options(selectinload(User.teacher_profile))
+    ).all()
+
+    teachers_dict: dict[uuid.UUID, dict] = {}
+    for user, subject in rows:
+        bucket = teachers_dict.setdefault(user.id, {
+            "id": user.id,
+            "full_name": user.full_name,
+            "department_name": user.teacher_profile.department_name if user.teacher_profile else None,
+            "designation": user.teacher_profile.designation if user.teacher_profile else None,
+            "subject_codes": [],
+        })
+        if subject.code not in bucket["subject_codes"]:
+            bucket["subject_codes"].append(subject.code)
+
+    return [AccessibleTeacher(**v) for v in teachers_dict.values()]
+
+
+def _student_can_dm_teacher(db: Session, student: User, teacher_id: uuid.UUID) -> bool:
+    """Whether `student` is allowed to send a private doubt to `teacher_id`."""
+    accessible_ids = {t.id for t in get_accessible_teachers(db, student)}
+    return teacher_id in accessible_ids
+
+
+# ════════════════════════════════════════════════════════════════
 # CRUD — doubts
 # ════════════════════════════════════════════════════════════════
 
@@ -106,9 +197,37 @@ def create_doubt(
     db: Session, user: User, data: DoubtCreate
 ) -> DoubtResponse:
     _require_student(user)
+
+    visibility = DoubtVisibility(data.visibility)
+    assigned_teacher_id: uuid.UUID | None = None
+
+    if visibility == DoubtVisibility.PRIVATE:
+        if data.assigned_teacher_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="A private doubt must specify which teacher to send it to.",
+            )
+        # Validate target exists and is a teacher.
+        teacher = db.get(User, data.assigned_teacher_id)
+        if teacher is None or teacher.role != UserRole.TEACHER:
+            raise HTTPException(
+                status_code=400, detail="Selected teacher does not exist.",
+            )
+        if not _student_can_dm_teacher(db, user, teacher.id):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "You can only DM teachers whose subjects you've engaged with "
+                    "(taken a quiz or posted a doubt under)."
+                ),
+            )
+        assigned_teacher_id = teacher.id
+
     doubt = Doubt(
         student_id=user.id,
         subject_id=data.subject_id,
+        visibility=visibility,
+        assigned_teacher_id=assigned_teacher_id,
         title=data.title.strip(),
         body=data.body.strip(),
         tags=list(data.tags or []),
@@ -119,10 +238,12 @@ def create_doubt(
 
     author = db.get(User, doubt.student_id)
     subject = db.get(Subject, doubt.subject_id) if doubt.subject_id else None
+    assigned_teacher = db.get(User, assigned_teacher_id) if assigned_teacher_id else None
     return _to_doubt_response(
         doubt,
         author=author,
         subject=subject,
+        assigned_teacher=assigned_teacher,
         answer_count=0,
         has_ai_answer=False,
     )
@@ -135,8 +256,18 @@ def list_doubts(
     search: str | None = None,
     tag: str | None = None,
     only_mine: bool = False,
+    visibility: str | None = None,
     limit: int = 50,
 ) -> list[DoubtResponse]:
+    """Role-aware listing.
+
+    - Students see: PUBLIC doubts + their own PRIVATE doubts.
+    - Teachers see: PRIVATE doubts assigned to them (their DM inbox).
+                    (Public feed is student-to-student; teachers stay out of it.)
+    - Admins see: everything.
+
+    The optional `visibility` query lets a student tab between 'public' / 'private'.
+    """
     stmt = (
         select(Doubt, User, Subject)
         .outerjoin(User, Doubt.student_id == User.id)
@@ -144,15 +275,51 @@ def list_doubts(
         .order_by(Doubt.created_at.desc())
         .limit(limit)
     )
-    if only_mine:
+
+    if user.role == UserRole.STUDENT:
+        stmt = stmt.where(
+            sqlfunc.coalesce(Doubt.visibility, DoubtVisibility.PUBLIC.value).in_([
+                DoubtVisibility.PUBLIC.value,
+            ])
+            | (Doubt.student_id == user.id)
+        )
+        # Hide DMs the student has "deleted from their view".
+        stmt = stmt.where(
+            ~((Doubt.visibility == DoubtVisibility.PRIVATE)
+              & (Doubt.student_id == user.id)
+              & (Doubt.hidden_for_student.is_(True)))
+        )
+    elif user.role == UserRole.TEACHER:
+        # Teachers see ONLY their assigned DMs by default, minus ones they hid.
+        stmt = stmt.where(
+            (Doubt.visibility == DoubtVisibility.PRIVATE)
+            & (Doubt.assigned_teacher_id == user.id)
+            & (Doubt.hidden_for_teacher.is_(False))
+        )
+    # admin: no extra filter
+
+    if only_mine and user.role == UserRole.STUDENT:
         stmt = stmt.where(Doubt.student_id == user.id)
+
+    if visibility in ("public", "private"):
+        stmt = stmt.where(Doubt.visibility == DoubtVisibility(visibility))
+
     if search:
         like = f"%{search.lower()}%"
         stmt = stmt.where(sqlfunc.lower(Doubt.title).like(like))
+
     rows = db.execute(stmt).all()
     doubts = [r[0] for r in rows]
 
-    # Batch answer counts
+    # Drop public doubts the current user has hidden from their feed.
+    uid_str = str(user.id)
+    rows = [
+        r for r in rows
+        if uid_str not in (r[0].hidden_by_user_ids or [])
+    ]
+    doubts = [r[0] for r in rows]
+
+    # Batch answer counts + AI flag + assigned-teacher names
     doubt_ids = [d.id for d in doubts]
     answer_counts: dict[uuid.UUID, int] = {}
     ai_flags: dict[uuid.UUID, bool] = {}
@@ -171,7 +338,14 @@ def list_doubts(
         ).all()
         ai_flags = {row[0]: True for row in ai_rows}
 
-    # Post-filter by tag (JSON list, hard to do server-side cleanly)
+    assigned_teacher_ids = {d.assigned_teacher_id for d in doubts if d.assigned_teacher_id}
+    teacher_map: dict[uuid.UUID, User] = {}
+    if assigned_teacher_ids:
+        teacher_rows = db.scalars(
+            select(User).where(User.id.in_(assigned_teacher_ids))
+        ).all()
+        teacher_map = {u.id: u for u in teacher_rows}
+
     if tag:
         rows = [r for r in rows if tag in (r[0].tags or [])]
 
@@ -180,6 +354,7 @@ def list_doubts(
             d,
             author=u,
             subject=s,
+            assigned_teacher=teacher_map.get(d.assigned_teacher_id) if d.assigned_teacher_id else None,
             answer_count=answer_counts.get(d.id, 0),
             has_ai_answer=ai_flags.get(d.id, False),
         )
@@ -190,8 +365,6 @@ def list_doubts(
 def get_doubt(
     db: Session, user: User, doubt_id: uuid.UUID
 ) -> DoubtDetailResponse:
-    """Fetch a doubt with all its answers. Triggers the AI fallback if the
-    doubt is older than 10 minutes and still has zero human answers."""
     doubt = db.scalar(
         select(Doubt)
         .where(Doubt.id == doubt_id)
@@ -200,16 +373,32 @@ def get_doubt(
     if doubt is None:
         raise HTTPException(status_code=404, detail="Doubt not found")
 
-    # Bump view count
+    if not _can_view_doubt(user, doubt):
+        raise HTTPException(status_code=403, detail="You can't view this doubt.")
+
+    # Respect "Delete from my view" — pretend the doubt doesn't exist for the hider.
+    if doubt.visibility == DoubtVisibility.PRIVATE:
+        if user.id == doubt.student_id and doubt.hidden_for_student:
+            raise HTTPException(status_code=404, detail="Doubt not found")
+        if user.id == doubt.assigned_teacher_id and doubt.hidden_for_teacher:
+            raise HTTPException(status_code=404, detail="Doubt not found")
+    else:
+        if str(user.id) in (doubt.hidden_by_user_ids or []):
+            raise HTTPException(status_code=404, detail="Doubt not found")
+
     doubt.view_count = (doubt.view_count or 0) + 1
     db.commit()
 
-    # AI fallback — only if no human answer AND no existing AI answer AND old enough
-    _maybe_generate_ai_fallback(db, doubt)
-    db.refresh(doubt)
+    # AI fallback runs only for PUBLIC doubts.
+    if doubt.visibility == DoubtVisibility.PUBLIC:
+        _maybe_generate_ai_fallback(db, doubt)
+        db.refresh(doubt)
 
     author = db.get(User, doubt.student_id)
     subject = db.get(Subject, doubt.subject_id) if doubt.subject_id else None
+    assigned_teacher = (
+        db.get(User, doubt.assigned_teacher_id) if doubt.assigned_teacher_id else None
+    )
 
     answers_sorted = sorted(
         doubt.answers or [],
@@ -225,6 +414,7 @@ def get_doubt(
         doubt,
         author=author,
         subject=subject,
+        assigned_teacher=assigned_teacher,
         answer_count=len(doubt.answers or []),
         has_ai_answer=any(a.is_ai_generated for a in (doubt.answers or [])),
     )
@@ -240,6 +430,10 @@ def upvote_doubt(
     doubt = db.get(Doubt, doubt_id)
     if doubt is None:
         raise HTTPException(status_code=404, detail="Doubt not found")
+    if not _can_view_doubt(user, doubt):
+        raise HTTPException(status_code=403, detail="You can't upvote this doubt.")
+    if doubt.visibility == DoubtVisibility.PRIVATE:
+        raise HTTPException(status_code=400, detail="Private DMs can't be upvoted.")
     doubt.upvote_count = (doubt.upvote_count or 0) + 1
     db.commit()
     db.refresh(doubt)
@@ -249,6 +443,7 @@ def upvote_doubt(
         doubt,
         author=author,
         subject=subject,
+        assigned_teacher=None,
         answer_count=len(doubt.answers or []),
         has_ai_answer=any(a.is_ai_generated for a in (doubt.answers or [])),
     )
@@ -264,6 +459,44 @@ def delete_doubt(db: Session, user: User, doubt_id: uuid.UUID) -> None:
     db.commit()
 
 
+def hide_doubt_for_me(db: Session, user: User, doubt_id: uuid.UUID) -> None:
+    """WhatsApp-style 'delete from my view'.
+
+    PRIVATE DMs: uses the boolean pair. If both participants hide → hard-delete.
+    PUBLIC posts: appends user.id to hidden_by_user_ids (idempotent). The post
+    stays visible to every other reader.
+    """
+    doubt = db.get(Doubt, doubt_id)
+    if doubt is None:
+        raise HTTPException(status_code=404, detail="Doubt not found")
+
+    if doubt.visibility == DoubtVisibility.PRIVATE:
+        if user.id == doubt.student_id:
+            doubt.hidden_for_student = True
+        elif doubt.assigned_teacher_id is not None and user.id == doubt.assigned_teacher_id:
+            doubt.hidden_for_teacher = True
+        else:
+            raise HTTPException(
+                status_code=403,
+                detail="You aren't a participant in this DM.",
+            )
+        if doubt.hidden_for_student and doubt.hidden_for_teacher:
+            db.delete(doubt)
+    else:
+        # PUBLIC: only students (the audience) can hide for themselves.
+        if user.role != UserRole.STUDENT:
+            raise HTTPException(
+                status_code=403,
+                detail="Only students hide public posts from their feed.",
+            )
+        current = list(doubt.hidden_by_user_ids or [])
+        uid_str = str(user.id)
+        if uid_str not in current:
+            current.append(uid_str)
+            doubt.hidden_by_user_ids = current
+    db.commit()
+
+
 # ════════════════════════════════════════════════════════════════
 # Answers
 # ════════════════════════════════════════════════════════════════
@@ -271,10 +504,14 @@ def delete_doubt(db: Session, user: User, doubt_id: uuid.UUID) -> None:
 def create_answer(
     db: Session, user: User, doubt_id: uuid.UUID, data: DoubtAnswerCreate
 ) -> DoubtAnswerResponse:
-    _require_student(user)
     doubt = db.get(Doubt, doubt_id)
     if doubt is None:
         raise HTTPException(status_code=404, detail="Doubt not found")
+    if not _can_answer_doubt(user, doubt):
+        raise HTTPException(
+            status_code=403,
+            detail="You can't answer this doubt.",
+        )
     answer = DoubtAnswer(
         doubt_id=doubt.id,
         answered_by_id=user.id,
@@ -285,12 +522,13 @@ def create_answer(
     db.commit()
     db.refresh(answer)
 
-    # XP drip for answering a peer's doubt
-    try:
-        xp.award_xp(db, user, XPEventType.DOUBT_ANSWERED, reference_id=doubt.id)
-        db.commit()
-    except Exception as e:
-        logger.warning("XP award (doubt answered) failed: %s", e)
+    # XP drip — only on public answers, and only for students.
+    if doubt.visibility == DoubtVisibility.PUBLIC and user.role == UserRole.STUDENT:
+        try:
+            xp.award_xp(db, user, XPEventType.DOUBT_ANSWERED, reference_id=doubt.id)
+            db.commit()
+        except Exception as e:
+            logger.warning("XP award (doubt answered) failed: %s", e)
 
     return _to_answer_response(answer, user)
 
@@ -301,6 +539,13 @@ def upvote_answer(
     answer = db.get(DoubtAnswer, answer_id)
     if answer is None:
         raise HTTPException(status_code=404, detail="Answer not found")
+    doubt = db.get(Doubt, answer.doubt_id)
+    if doubt is None:
+        raise HTTPException(status_code=404, detail="Doubt not found")
+    if not _can_view_doubt(user, doubt):
+        raise HTTPException(status_code=403, detail="You can't upvote this answer.")
+    if doubt.visibility == DoubtVisibility.PRIVATE:
+        raise HTTPException(status_code=400, detail="Private DM answers can't be upvoted.")
     answer.upvote_count = (answer.upvote_count or 0) + 1
     db.commit()
     db.refresh(answer)
@@ -334,7 +579,6 @@ def accept_answer(
             status_code=403, detail="Only the doubt's author can accept an answer"
         )
 
-    # Unaccept any previously accepted answers on this doubt
     db.execute(
         DoubtAnswer.__table__.update()
         .where(DoubtAnswer.doubt_id == doubt.id)
@@ -354,11 +598,16 @@ def accept_answer(
 # ════════════════════════════════════════════════════════════════
 
 def _maybe_generate_ai_fallback(db: Session, doubt: Doubt) -> None:
-    """Generate a Claude answer if the doubt has zero answers and is ≥ 10 min old."""
+    """Generate a Claude answer if the doubt has zero answers and is ≥ 10 min old.
+
+    PRIVATE doubts are excluded — they're meant to reach a specific human.
+    """
+    if doubt.visibility == DoubtVisibility.PRIVATE:
+        return
     if any(a.is_ai_generated for a in (doubt.answers or [])):
         return
     if any(not a.is_ai_generated for a in (doubt.answers or [])):
-        return  # a human already replied
+        return
     age = datetime.now(timezone.utc) - _ensure_tz(doubt.created_at)
     if age < timedelta(minutes=AI_FALLBACK_DELAY_MINUTES):
         return

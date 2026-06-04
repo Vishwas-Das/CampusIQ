@@ -7,6 +7,7 @@ from fastapi import APIRouter, status
 
 from app.api.deps import CurrentUser, DbSession
 from app.schemas.community import (
+    AccessibleTeacher,
     DoubtAnswerCreate,
     DoubtAnswerResponse,
     DoubtCreate,
@@ -18,12 +19,24 @@ from app.services import community
 router = APIRouter()
 
 
+@router.get(
+    "/accessible-teachers",
+    response_model=list[AccessibleTeacher],
+    summary="Teachers this student can DM (per Option B: teachers of subjects they have activity in)",
+)
+def list_accessible_teachers(
+    db: DbSession,
+    current_user: CurrentUser,
+) -> list[AccessibleTeacher]:
+    return community.get_accessible_teachers(db, current_user)
+
+
 # ── Doubts ──
 
 @router.get(
     "/",
     response_model=list[DoubtResponse],
-    summary="List doubts (newest first) — filterable by tag or search",
+    summary="List doubts (newest first) — filterable by tag, visibility, or search",
 )
 def list_doubts(
     db: DbSession,
@@ -31,6 +44,7 @@ def list_doubts(
     search: str | None = None,
     tag: str | None = None,
     only_mine: bool = False,
+    visibility: str | None = None,
     limit: int = 50,
 ) -> list[DoubtResponse]:
     return community.list_doubts(
@@ -39,6 +53,7 @@ def list_doubts(
         search=search,
         tag=tag,
         only_mine=only_mine,
+        visibility=visibility,
         limit=limit,
     )
 
@@ -86,7 +101,7 @@ def upvote_doubt(
 @router.delete(
     "/{doubt_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a doubt (author only)",
+    summary="Delete a doubt entirely (author only — for public posts)",
 )
 def delete_doubt(
     doubt_id: uuid.UUID,
@@ -94,6 +109,19 @@ def delete_doubt(
     current_user: CurrentUser,
 ) -> None:
     community.delete_doubt(db, current_user, doubt_id)
+
+
+@router.delete(
+    "/{doubt_id}/hide",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Hide a private DM from MY view only (WhatsApp-style). Other party still sees it.",
+)
+def hide_doubt_for_me(
+    doubt_id: uuid.UUID,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> None:
+    community.hide_doubt_for_me(db, current_user, doubt_id)
 
 
 # ── Answers ──

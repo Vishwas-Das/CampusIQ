@@ -11,6 +11,7 @@ from app.api.routes import (
     college_documents,
     community,
     confidence,
+    crash_mode,
     dashboard,
     documents,
     gamification,
@@ -48,6 +49,7 @@ api_router.include_router(jobs.router, prefix="/jobs", tags=["jobs"])
 api_router.include_router(community.router, prefix="/community", tags=["community"])
 api_router.include_router(gamification.router, prefix="/gamification", tags=["gamification"])
 api_router.include_router(algorithms.router, prefix="/algorithms", tags=["algorithms"])
+api_router.include_router(crash_mode.router, prefix="/crash-mode", tags=["crash-mode"])
 api_router.include_router(admin.router, prefix="/admin", tags=["admin"])
 api_router.include_router(notifications.router, prefix="/ws", tags=["websockets"])
 api_router.include_router(boss_battles.router, prefix="/boss-battles", tags=["boss-battles"])

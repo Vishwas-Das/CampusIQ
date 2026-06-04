@@ -18,6 +18,7 @@ from app.models.algorithm import (
 )
 from app.models.chat import ChatMessage, ChatSession, ChatType, MessageRole
 from app.models.community import Doubt, DoubtAnswer
+from app.models.crash_mode import CrashModePlan
 from app.models.content import (
     Announcement,
     AnnouncementTarget,
@@ -93,6 +94,8 @@ __all__ = [
     # Community
     "Doubt",
     "DoubtAnswer",
+    # Crash Mode
+    "CrashModePlan",
     # Placement
     "Resume",
     "MockInterviewSession",

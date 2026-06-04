@@ -37,6 +37,7 @@ import SkillTreePage from '../pages/student/SkillTreePage'
 import LeaderboardPage from '../pages/student/LeaderboardPage'
 import ProfilePage from '../pages/student/ProfilePage'
 import SettingsPage from '../pages/student/SettingsPage'
+import TeacherSettingsPage from '../pages/teacher/SettingsPage'
 import BossBattlesPage from '../pages/student/BossBattlesPage'
 import ResumePrintPage from '../pages/student/ResumePrintPage'
 
@@ -114,7 +115,8 @@ const router = createBrowserRouter(
           <Route path="analytics" element={<AnalyticsPage />} />
           <Route path="students" element={<StudentDetailsPage />} />
           <Route path="similarity" element={<SimilarityCheckerPage />} />
-          <Route path="settings" element={<SettingsPage />} />
+          <Route path="doubts" element={<CommunityPage />} />
+          <Route path="settings" element={<TeacherSettingsPage />} />
         </Route>
       </Route>
 

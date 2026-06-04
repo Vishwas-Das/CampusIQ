@@ -10,6 +10,7 @@ from app.schemas.auth import (
     SignupRequest,
     SimpleMessage,
     StudentProfileUpdate,
+    TeacherProfileUpdate,
     TokenResponse,
     UserResponse,
 )
@@ -83,6 +84,22 @@ def update_profile(
     """Patch the StudentProfile fields. Only present keys are written."""
     updates = data.model_dump(exclude_unset=True)
     updated_user = auth_service.update_student_profile(db, current_user, updates)
+    return UserResponse.model_validate(updated_user)
+
+
+@router.patch(
+    "/me/teacher-profile",
+    response_model=UserResponse,
+    summary="Update the teacher profile for the current user",
+)
+def update_teacher_profile(
+    data: TeacherProfileUpdate,
+    db: DbSession,
+    current_user: CurrentUser,
+) -> UserResponse:
+    """Patch the TeacherProfile fields. Only present keys are written."""
+    updates = data.model_dump(exclude_unset=True)
+    updated_user = auth_service.update_teacher_profile(db, current_user, updates)
     return UserResponse.model_validate(updated_user)
 
 

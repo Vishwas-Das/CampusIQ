@@ -44,6 +44,7 @@ const pageTitles: Record<string, string> = {
   '/teacher/analytics': 'Class Performance',
   '/teacher/students': 'Student Details',
   '/teacher/similarity': 'Similarity Checker',
+  '/teacher/doubts': 'Direct Messages',
   '/admin': 'Dashboard',
   '/admin/college-docs': 'College Documents',
   '/admin/knowledge': 'Knowledge Editor',

@@ -84,6 +84,12 @@ const teacherNav: NavSection[] = [
       { to: '/teacher/similarity', icon: Shield, label: 'Similarity Checker' },
     ],
   },
+  {
+    group: 'INBOX',
+    items: [
+      { to: '/teacher/doubts', icon: MessageSquare, label: 'Direct Messages' },
+    ],
+  },
 ]
 
 const adminNav: NavSection[] = [

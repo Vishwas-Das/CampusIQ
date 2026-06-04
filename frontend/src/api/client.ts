@@ -33,6 +33,7 @@ import type {
   KnowledgeSuggestion,
   CompanyProfile,
   DashboardResponse,
+  AccessibleTeacher,
   DoubtAnswerCreate,
   DoubtAnswerResponse,
   DoubtCreate,
@@ -218,6 +219,11 @@ export interface StudentProfileUpdate {
   target_role?: string | null
 }
 
+export interface TeacherProfileUpdate {
+  department_name?: string | null
+  designation?: string | null
+}
+
 export const authApi = {
   signup: (data: SignupRequest) => api.post<TokenResponse>('/auth/signup', data),
   login: (email: string, password: string) =>
@@ -227,6 +233,8 @@ export const authApi = {
     api.patch<{ detail: string }>('/auth/me/password', data),
   updateProfile: (data: StudentProfileUpdate) =>
     api.patch<User>('/auth/me/profile', data),
+  updateTeacherProfile: (data: TeacherProfileUpdate) =>
+    api.patch<User>('/auth/me/teacher-profile', data),
   deleteAccount: () => api.delete<void>('/auth/me'),
 }
 
@@ -475,6 +483,53 @@ export const bossBattlesApi = {
     api.post<BossBattleSubmitResponse>(`/boss-battles/${id}/submit`, data),
 }
 
+// ── Crash Mode persistent plan ──
+
+export interface CrashTask {
+  topic: string
+  hours: number
+  priority: number
+  subject_code: string | null
+}
+
+export interface CrashModePlanResponse {
+  id: string
+  student_id: string
+  target_label: string
+  target_days: number
+  started_at: string
+  tasks: CrashTask[]
+  completed_topics: string[]
+  total_hours_scheduled: number
+  updated_at: string
+}
+
+export interface CrashModePlanWrite {
+  target_label: string
+  target_days: number
+  started_at: string
+  tasks: CrashTask[]
+  completed_topics: string[]
+  total_hours_scheduled: number
+}
+
+export const crashModeApi = {
+  // Returns null if no active plan (404), throws on other errors.
+  getMine: async (): Promise<CrashModePlanResponse | null> => {
+    try {
+      return await api.get<CrashModePlanResponse>('/crash-mode/me')
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) return null
+      throw err
+    }
+  },
+  upsert: (data: CrashModePlanWrite) =>
+    api.put<CrashModePlanResponse>('/crash-mode/me', data),
+  setCompletedTopics: (completed_topics: string[]) =>
+    api.patch<CrashModePlanResponse>('/crash-mode/me/topics', { completed_topics }),
+  discard: () => api.delete<void>('/crash-mode/me'),
+}
+
 // ── Algorithm Showcase (Phase 19, F21/F23/F25/F26) ──
 
 export const algorithmsApi = {
@@ -530,19 +585,29 @@ export const jobsApi = {
 // ── Peer Doubt Community (Phase 17, F4) ──
 
 export const communityApi = {
-  list: (params?: { search?: string; tag?: string; onlyMine?: boolean; limit?: number }) => {
+  list: (params?: {
+    search?: string
+    tag?: string
+    onlyMine?: boolean
+    visibility?: 'public' | 'private'
+    limit?: number
+  }) => {
     const qs = new URLSearchParams()
     if (params?.search) qs.set('search', params.search)
     if (params?.tag) qs.set('tag', params.tag)
     if (params?.onlyMine) qs.set('only_mine', 'true')
+    if (params?.visibility) qs.set('visibility', params.visibility)
     if (params?.limit) qs.set('limit', String(params.limit))
     const query = qs.toString() ? `?${qs.toString()}` : ''
     return api.get<DoubtResponse[]>(`/community/${query}`)
   },
+  accessibleTeachers: () =>
+    api.get<AccessibleTeacher[]>('/community/accessible-teachers'),
   create: (data: DoubtCreate) => api.post<DoubtResponse>('/community/', data),
   get: (id: string) => api.get<DoubtDetailResponse>(`/community/${id}`),
   upvote: (id: string) => api.post<DoubtResponse>(`/community/${id}/upvote`),
   delete: (id: string) => api.delete<void>(`/community/${id}`),
+  hideForMe: (id: string) => api.delete<void>(`/community/${id}/hide`),
   answer: (id: string, data: DoubtAnswerCreate) =>
     api.post<DoubtAnswerResponse>(`/community/${id}/answers`, data),
   upvoteAnswer: (id: string) => api.post<DoubtAnswerResponse>(`/community/answers/${id}/upvote`),
