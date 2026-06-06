@@ -81,6 +81,10 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
   const recognitionRef = useRef<SpeechRecognitionType | null>(null)
   // Accumulate all final segments across one session.
   const finalBufferRef = useRef<string>('')
+  // Mirrors the latest interim text. We need this in a ref so onend can
+  // flush it into finalBufferRef before Chrome's auto-stop loses it —
+  // that's the "words dropped mid-sentence" bug.
+  const latestInterimRef = useRef<string>('')
   // Set to true when the caller WANTS continuous listening (e.g. during a
   // voice recording). If Chrome auto-stops SR mid-recording, the `onend`
   // handler restarts it without resetting the buffer.
@@ -91,6 +95,7 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
     setInterim('')
     setError(null)
     finalBufferRef.current = ''
+    latestInterimRef.current = ''
   }, [])
 
   const launchRecognition = useCallback((preserveBuffer: boolean) => {
@@ -118,6 +123,7 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
           interimStr += text
         }
       }
+      latestInterimRef.current = interimStr
       setTranscript(finalBufferRef.current)
       setInterim(interimStr)
     }
@@ -130,6 +136,18 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
     }
 
     recog.onend = () => {
+      // CRITICAL: flush the latest interim text into the final buffer BEFORE
+      // we lose it. Chrome's SR drops anything not marked "isFinal" when it
+      // ends — that was the "Hello. Hello." bug (only words SR managed to
+      // finalise survived; everything in-flight was thrown away).
+      const interim = latestInterimRef.current.trim()
+      if (interim) {
+        finalBufferRef.current = (finalBufferRef.current + ' ' + interim).trim()
+        latestInterimRef.current = ''
+        setTranscript(finalBufferRef.current)
+        setInterim('')
+      }
+
       setListening(false)
       recognitionRef.current = null
       // Chrome auto-stops SR after a stretch of silence or competing audio
