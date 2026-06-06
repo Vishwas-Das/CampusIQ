@@ -51,12 +51,21 @@ class QuizBase(BaseModel):
     description: str | None = None
     difficulty: DifficultyLiteral
     time_limit_minutes: int | None = None
+    # Per-attempt duration as exact seconds (e.g. 5400 = 1h 30min). Frontend
+    # splits this into h/m/s when rendering the countdown.
+    time_limit_seconds: int | None = None
+    # The window during which students may take this quiz. NULL = unbounded.
+    opens_at: datetime | None = None
+    closes_at: datetime | None = None
     is_published: bool
     is_ai_generated: bool
     created_at: datetime
     question_count: int = 0
     attempt_count: int = 0
     avg_score: float | None = None
+    # Whether the CURRENT user has already submitted an attempt. Only
+    # populated for student-facing responses; teachers get None.
+    has_attempted: bool | None = None
 
 
 class QuizResponse(QuizBase):
@@ -82,7 +91,13 @@ class QuizForTeacher(QuizResponse):
 
 class QuizGenerateRequest(BaseModel):
     subject_id: uuid.UUID
+    # OLD: document_id (single). Kept for back-compat if any callers still
+    # send it — the service folds it into document_ids before processing.
     document_id: uuid.UUID | None = None
+    # NEW: list of document IDs to draw chunks from.
+    #   - None or empty list  → use ALL documents in the subject
+    #   - non-empty list      → only those documents
+    document_ids: list[uuid.UUID] | None = None
     topic_hint: str | None = Field(None, max_length=255)
     num_questions: int = Field(5, ge=3, le=20)
     difficulty: DifficultyLiteral = "medium"
@@ -107,6 +122,13 @@ class QuizUpdate(BaseModel):
     description: str | None = None
     difficulty: DifficultyLiteral | None = None
     time_limit_minutes: int | None = None
+    # Either time_limit_seconds OR time_limit_minutes can be sent. seconds
+    # wins if both are present (more precise).
+    time_limit_seconds: int | None = None
+    # Pass null to clear the window (back to always-open). Datetimes must be
+    # timezone-aware; the frontend serializes JS Date with .toISOString().
+    opens_at: datetime | None = None
+    closes_at: datetime | None = None
     is_published: bool | None = None
     questions: list[QuestionUpdate] | None = None
 
@@ -116,6 +138,28 @@ class QuizUpdate(BaseModel):
 class QuestionAnswer(BaseModel):
     question_id: uuid.UUID
     student_answer: str
+
+
+# ── Question flags ──
+
+class QuestionFlagCreate(BaseModel):
+    """Body of POST .../flag. `reason` is optional — students sometimes flag
+    without typing anything, just to mark the question."""
+
+    reason: str | None = Field(None, max_length=1000)
+
+
+class QuestionFlagResponse(BaseModel):
+    """Read shape returned to students + teachers."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    question_id: uuid.UUID
+    student_id: uuid.UUID
+    reason: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class QuizAttemptCreate(BaseModel):

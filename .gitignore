@@ -3,6 +3,15 @@
 backend/.env
 frontend/.env
 
+# Uploaded user content — never commit student/teacher uploads
+backend/uploads/
+uploads/
+*.pdf
+*.docx
+*.pptx
+*.xlsx
+*.rtf
+
 # Python
 backend/.venv
 __pycache__/

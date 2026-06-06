@@ -53,6 +53,8 @@ def upload_document(
     subject_id: uuid.UUID = Form(...),
     file: UploadFile = File(...),
     title: str | None = Form(None),
+    chapter: str | None = Form(None),
+    description: str | None = Form(None),
 ) -> DocumentResponse:
     response = document_service.upload_document(
         db,
@@ -60,6 +62,8 @@ def upload_document(
         file=file,
         user=current_user,
         title=title,
+        chapter=chapter,
+        description=description,
     )
     # Kick off the async pipeline: text extraction -> chunking -> Huffman -> embeddings -> summary
     background_tasks.add_task(process_document, response.id)
@@ -180,10 +184,23 @@ def download_document(
     storage_path = Path(document.storage_path)
     if not storage_path.exists():
         raise HTTPException(status_code=410, detail="File no longer exists on disk")
+
+    # The teacher's chapter (the name they gave the doc in the upload form)
+    # becomes the download filename — that's the meaningful label, not the
+    # raw filename. Fall back to the upload's original name only when the
+    # teacher skipped the chapter field.
+    ext = storage_path.suffix  # includes the leading "."
+    chapter = (document.chapter or "").strip()
+    if chapter:
+        sanitised = "".join(c for c in chapter if c not in r'<>:"/\|?*').strip(" .")
+        download_name = f"{sanitised or 'document'}{ext}"
+    else:
+        download_name = document.file_name
+
     return FileResponse(
         path=str(storage_path),
         media_type=document.content_type or "application/octet-stream",
-        filename=document.file_name,
+        filename=download_name,
     )
 
 

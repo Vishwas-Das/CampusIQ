@@ -67,7 +67,12 @@ function readStoredMode(): AssistantMode {
 }
 
 const ACCEPTED_FILE_TYPES =
-  '.pdf,.doc,.docx,.ppt,.pptx,.txt,.md,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint,text/plain,text/markdown'
+  '.pdf,.docx,.pptx,.xlsx,.html,.htm,.rtf,.txt,.md,' +
+  'application/pdf,' +
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document,' +
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation,' +
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,' +
+  'application/rtf,text/rtf,text/html,text/plain,text/markdown'
 
 const MAX_FILE_BYTES = 25 * 1024 * 1024
 
@@ -96,6 +101,9 @@ export default function NoteAssistantPage() {
   const [activeSubjectId, setActiveSubjectId] = useState<string | null>(null)
   const [session, setSession] = useState<ChatSession | null>(null)
   const [sessionLoading, setSessionLoading] = useState(false)
+  // ALL chat sessions for the current subject — so the student can
+  // switch back to old conversations instead of losing them on "New chat".
+  const [sessions, setSessions] = useState<ChatSession[]>([])
 
   // Messages currently displayed (mix of persisted + currently-streaming)
   const [messages, setMessages] = useState<ChatLayoutMessage[]>([])
@@ -157,7 +165,9 @@ export default function NoteAssistantPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // ── When subject changes, find or create the session for it ──
+  // ── When subject changes, load ALL sessions for that subject ──
+  // The most recent one becomes active, but the full list shows in the left
+  // panel so the student can switch back to old conversations.
   useEffect(() => {
     if (!activeSubjectId) return
     let cancelled = false
@@ -170,26 +180,29 @@ export default function NoteAssistantPage() {
       setSessionLoading(true)
       setMessages([])
       setSession(null)
+      setSessions([])
       setChatError(null)
 
       try {
-        // Look for an existing session for this subject
-        const existing = await chatApi.listSessions('note_assistant', activeSubjectId)
-        let s: ChatSession
-        if (existing.length > 0) {
-          s = existing[0]!
-        } else {
-          // Create a fresh one
-          s = await chatApi.createSession({
+        // Load all sessions for this subject (backend returns newest first)
+        let existing = await chatApi.listSessions('note_assistant', activeSubjectId)
+
+        if (existing.length === 0) {
+          // First time on this subject — create one fresh empty session
+          const fresh = await chatApi.createSession({
             chat_type: 'note_assistant',
             subject_id: activeSubjectId,
           })
+          existing = [fresh]
         }
-        if (cancelled) return
-        setSession(s)
 
-        // Load full message history
-        const fullSession = await chatApi.getSession(s.id)
+        if (cancelled) return
+        setSessions(existing)
+
+        // Make the most-recent session the active one and load its messages
+        const active = existing[0]!
+        setSession(active)
+        const fullSession = await chatApi.getSession(active.id)
         if (cancelled) return
         setMessages(fullSession.messages.map(backendMessageToLayout))
       } catch (err) {
@@ -209,6 +222,62 @@ export default function NoteAssistantPage() {
       cancelled = true
     }
   }, [activeSubjectId])
+
+  // Switch to a specific past session (clicked in the Chats sidebar).
+  const handleSelectSession = async (target: ChatSession) => {
+    if (streaming || sessionLoading || target.id === session?.id) return
+    abortRef.current?.abort()
+    abortRef.current = null
+    setSessionLoading(true)
+    setMessages([])
+    setChatError(null)
+    try {
+      const full = await chatApi.getSession(target.id)
+      setSession(target)
+      setMessages(full.messages.map(backendMessageToLayout))
+    } catch (err) {
+      setChatError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not load that chat',
+      )
+    } finally {
+      setSessionLoading(false)
+    }
+  }
+
+  // Delete a past chat (with the row's trash button). Keeps things tidy when
+  // the student wants to clean up old conversations.
+  const handleDeleteSession = async (target: ChatSession) => {
+    if (streaming || sessionLoading) return
+    if (!window.confirm('Delete this chat? Messages will be lost.')) return
+    try {
+      await chatApi.deleteSession(target.id)
+      setSessions((prev) => prev.filter((s) => s.id !== target.id))
+      // If we just deleted the active one, fall back to the next-newest
+      // (or create a fresh empty session if it was the last).
+      if (session?.id === target.id) {
+        const remaining = sessions.filter((s) => s.id !== target.id)
+        if (remaining.length > 0) {
+          await handleSelectSession(remaining[0]!)
+        } else if (activeSubjectId) {
+          const fresh = await chatApi.createSession({
+            chat_type: 'note_assistant',
+            subject_id: activeSubjectId,
+          })
+          setSessions([fresh])
+          setSession(fresh)
+          setMessages([])
+        }
+      }
+    } catch (err) {
+      setChatError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not delete that chat',
+      )
+    }
+  }
 
   // ── Load personal notes for the active subject ──
   const reloadMyNotes = async () => {
@@ -359,9 +428,30 @@ export default function NoteAssistantPage() {
       })
 
       // After the stream finishes, refresh from the server so we pick up
-      // the persisted source_citations
+      // the persisted source_citations AND the backend-auto-generated title
+      // (set from the first user message — surfaces in the Chats sidebar).
       const refreshed = await chatApi.getSession(session.id)
       setMessages(refreshed.messages.map(backendMessageToLayout))
+      setSession({
+        id: refreshed.id,
+        user_id: refreshed.user_id,
+        chat_type: refreshed.chat_type,
+        subject_id: refreshed.subject_id,
+        title: refreshed.title,
+        created_at: refreshed.created_at,
+        last_message_at: refreshed.last_message_at,
+      })
+      setSessions((prev) =>
+        prev.map((s) =>
+          s.id === refreshed.id
+            ? {
+                ...s,
+                title: refreshed.title,
+                last_message_at: refreshed.last_message_at,
+              }
+            : s,
+        ),
+      )
     } catch (err) {
       if ((err as Error).name === 'AbortError') {
         // user switched away — silently drop
@@ -390,6 +480,8 @@ export default function NoteAssistantPage() {
         chat_type: 'note_assistant',
         subject_id: activeSubjectId,
       })
+      // Prepend so it shows at the top of the Chats list — old chats stay.
+      setSessions((prev) => [s, ...prev])
       setSession(s)
     } catch (err) {
       setChatError(
@@ -527,6 +619,61 @@ export default function NoteAssistantPage() {
               New chat
             </Button>
           </div>
+
+          {/* Past chat sessions for this subject — like Claude.ai projects.
+              New chat creates new ones, old ones stay accessible here. */}
+          {sessions.length > 0 && (
+            <div className="pt-3 border-t border-[var(--border-default)] mt-3">
+              <div className="flex items-center justify-between gap-2 px-2 mb-2">
+                <span className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider">
+                  Chats
+                </span>
+                <span className="text-[10px] text-[var(--text-tertiary)]">
+                  {sessions.length}
+                </span>
+              </div>
+
+              <div className="space-y-1">
+                {sessions.map((s) => {
+                  const isActive = s.id === session?.id
+                  const label =
+                    s.title?.trim() ||
+                    (isActive ? 'New chat' : 'Untitled chat')
+                  return (
+                    <div
+                      key={s.id}
+                      className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                        isActive
+                          ? 'bg-primary/10 text-[var(--text-primary)]'
+                          : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                      }`}
+                      onClick={() => void handleSelectSession(s)}
+                    >
+                      <div className="flex items-center gap-2 min-w-0 flex-1">
+                        <FileText
+                          className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-primary' : 'text-[var(--text-tertiary)]'}`}
+                        />
+                        <span className="text-xs truncate" title={label}>
+                          {label}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          void handleDeleteSession(s)
+                        }}
+                        className="opacity-0 group-hover:opacity-100 text-[var(--text-tertiary)] hover:text-danger transition-opacity"
+                        aria-label="Delete chat"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
 
           {/* Personal notes (NotebookLM-style) */}
           <div className="pt-3 border-t border-[var(--border-default)] mt-3">

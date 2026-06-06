@@ -85,13 +85,73 @@ export interface RecentUploadRow {
   status: DocumentProcessingStatus
 }
 
+export type TeacherActivityType =
+  | 'doc_uploaded'
+  | 'quiz_created'
+  | 'quiz_published'
+  | 'attempt_received'
+  | 'announcement'
+
+export interface TeacherActivityItem {
+  type: TeacherActivityType
+  title: string
+  subtitle: string | null
+  occurred_at: string
+  action_url: string | null
+}
+
+export interface SubjectPerformanceRow {
+  subject_id: string
+  subject_code: string
+  subject_name: string
+  attempts_count: number
+  students_count: number
+  avg_score: number
+}
+
+export interface TopicAccuracyRow {
+  topic: string
+  attempts: number
+  correct: number
+  accuracy_pct: number
+}
+
+export interface MissedQuestionRow {
+  question_id: string
+  question_text: string
+  quiz_id: string
+  quiz_title: string
+  times_asked: number
+  times_correct: number
+  accuracy_pct: number
+}
+
+export interface ScoreBucketRow {
+  bucket_label: string
+  bucket_min: number
+  bucket_max: number
+  count: number
+}
+
+export interface TeacherAnalyticsResponse {
+  subject_id: string | null
+  subject_code: string | null
+  subject_name: string | null
+  weakest_topics: TopicAccuracyRow[]
+  most_missed_questions: MissedQuestionRow[]
+  score_distribution: ScoreBucketRow[]
+  total_attempts: number
+}
+
 export interface TeacherDashboardResponse {
   teacher_id: string
   full_name: string
   department: string | null
   stats: TeacherStat[]
   recent_uploads: RecentUploadRow[]
+  recent_activity: TeacherActivityItem[]
   class_average: number | null
+  class_performance_by_subject: SubjectPerformanceRow[]
   students_total: number
 }
 

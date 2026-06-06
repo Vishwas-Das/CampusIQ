@@ -30,6 +30,12 @@ export interface QuizSummary {
   description: string | null
   difficulty: Difficulty
   time_limit_minutes: number | null
+  /** Exact per-attempt duration in seconds. Source of truth — minutes is kept
+   *  for legacy display only. */
+  time_limit_seconds: number | null
+  /** ISO 8601 UTC timestamps for the open / close window. null = no bound. */
+  opens_at: string | null
+  closes_at: string | null
   is_published: boolean
   is_ai_generated: boolean
   created_at: string
@@ -38,6 +44,9 @@ export interface QuizSummary {
   avg_score: number | null
   subject_code: string | null
   subject_name: string | null
+  /** Set on student-facing responses only — true iff this student has already
+   *  submitted an attempt. Drives the "Take" → "View Result" UI switch. */
+  has_attempted: boolean | null
 }
 
 export interface QuizForStudent extends QuizSummary {
@@ -50,7 +59,11 @@ export interface QuizForTeacher extends QuizSummary {
 
 export interface QuizGenerateRequest {
   subject_id: string
+  /** Legacy single doc — backend folds this into document_ids if both given. */
   document_id?: string | null
+  /** Multi-doc selection. null/empty/undefined = backend uses all docs in
+   *  the subject. Non-empty = use only those documents. */
+  document_ids?: string[] | null
   topic_hint?: string | null
   num_questions?: number
   difficulty?: Difficulty
@@ -73,6 +86,10 @@ export interface QuizUpdate {
   description?: string
   difficulty?: Difficulty
   time_limit_minutes?: number
+  time_limit_seconds?: number
+  /** Send ISO strings (use new Date(...).toISOString()) — backend stores UTC. */
+  opens_at?: string | null
+  closes_at?: string | null
   is_published?: boolean
   questions?: QuestionUpdate[]
 }
@@ -80,6 +97,21 @@ export interface QuizUpdate {
 export interface QuestionAnswer {
   question_id: string
   student_answer: string
+}
+
+/** Student-raised flag on a question ("this seems broken / ambiguous").
+ *  One row per (student, question) — re-flagging just updates the reason. */
+export interface QuestionFlag {
+  id: string
+  question_id: string
+  student_id: string
+  reason: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface QuestionFlagCreate {
+  reason?: string | null
 }
 
 export interface QuizAttemptCreate {

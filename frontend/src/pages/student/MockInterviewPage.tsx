@@ -250,21 +250,39 @@ export default function MockInterviewPage() {
     if (audioRef.current) {
       audioRef.current.pause()
     }
+    // Start SpeechRecognition FIRST so it claims a slot on the mic stream.
+    // If MediaRecorder grabs first, Chrome sometimes leaves SR with silence
+    // — that's the "voice not capturing words" bug.
     speech.reset()
-    await recorder.start()
     if (speech.supported) speech.start()
+    await recorder.start()
   }, [recorder, sending, session, speech, synth])
 
   const handleVoiceStop = useCallback(async () => {
     if (!session) return
+    // Stop SpeechRecognition FIRST so it flushes its final buffer into the
+    // transcript before we read it below. The recorder stop is async too.
     if (speech.supported) speech.stop()
     const result = await recorder.stop()
     if (!result) return
 
+    const transcript = (speech.transcript || '').trim()
+
+    // If browser SR is supported but came back empty, the user either didn't
+    // speak loud enough, or Chrome's audio router didn't share the mic with
+    // SR. Either way, we can't help — server-side ASR keys are empty too.
+    // Surface a clear message instead of silently submitting nothing.
+    if (speech.supported && !transcript) {
+      setError(
+        "We didn't catch any words. Speak a bit louder, check your mic, " +
+        "or try the Text mode while the voice path is being debugged.",
+      )
+      return
+    }
+
     setSending(true)
     setError(null)
     try {
-      const transcript = (speech.transcript || '').trim()
       const response = await interviewsApi.sendVoice({
         sessionId: session.id,
         audioBlob: result.blob,
@@ -362,19 +380,33 @@ export default function MockInterviewPage() {
         <motion.div variants={fadeUp}>
           <CardLabel className="mb-3">Select Company</CardLabel>
           <div className="grid grid-cols-3 gap-3">
-            {companies.map((c) => (
-              <div
-                key={c.name}
-                onClick={() => setSelectedCompany(c.name)}
-                className={clsx(
-                  'card-hover p-4 cursor-pointer flex items-center justify-between',
-                  selectedCompany === c.name && 'border-[var(--border-strong)] ring-1 ring-primary/20',
-                )}
-              >
-                <span className="font-medium text-[var(--text-primary)]">{c.name}</span>
-                <Badge variant={c.variant} size="sm">{c.difficulty}</Badge>
-              </div>
-            ))}
+            {companies.map((c) => {
+              const isSelected = selectedCompany === c.name
+              return (
+                <button
+                  key={c.name}
+                  type="button"
+                  onClick={() => setSelectedCompany(c.name)}
+                  aria-pressed={isSelected}
+                  className={clsx(
+                    'p-4 rounded-card border text-left transition-colors flex items-center justify-between cursor-pointer',
+                    isSelected
+                      ? 'bg-primary/10 border-primary ring-2 ring-primary/30'
+                      : 'border-[var(--border-default)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-tertiary)]',
+                  )}
+                >
+                  <span className="flex items-center gap-2 min-w-0">
+                    {isSelected && (
+                      <CheckCircle2 className="h-4 w-4 text-primary shrink-0" />
+                    )}
+                    <span className="font-medium text-[var(--text-primary)] truncate">
+                      {c.name}
+                    </span>
+                  </span>
+                  <Badge variant={c.variant} size="sm">{c.difficulty}</Badge>
+                </button>
+              )
+            })}
           </div>
         </motion.div>
 
@@ -397,22 +429,32 @@ export default function MockInterviewPage() {
         <motion.div variants={fadeUp}>
           <CardLabel className="mb-3">Select Persona</CardLabel>
           <div className="grid grid-cols-2 gap-3">
-            {personas.map((p) => (
-              <div
-                key={p.value}
-                onClick={() => setSelectedPersona(p.value)}
-                className={clsx(
-                  'card-hover p-4 cursor-pointer',
-                  selectedPersona === p.value && 'border-[var(--border-strong)] ring-1 ring-primary/20',
-                )}
-              >
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-xl">{p.emoji}</span>
-                  <span className="font-medium text-[var(--text-primary)]">{p.name}</span>
-                </div>
-                <p className="text-xs text-[var(--text-tertiary)]">{p.desc}</p>
-              </div>
-            ))}
+            {personas.map((p) => {
+              const isSelected = selectedPersona === p.value
+              return (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => setSelectedPersona(p.value)}
+                  aria-pressed={isSelected}
+                  className={clsx(
+                    'p-4 rounded-card border text-left transition-colors cursor-pointer',
+                    isSelected
+                      ? 'bg-primary/10 border-primary ring-2 ring-primary/30'
+                      : 'border-[var(--border-default)] bg-[var(--bg-elevated)] hover:bg-[var(--bg-tertiary)]',
+                  )}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xl">{p.emoji}</span>
+                    <span className="font-medium text-[var(--text-primary)]">{p.name}</span>
+                    {isSelected && (
+                      <CheckCircle2 className="h-4 w-4 text-primary ml-auto" />
+                    )}
+                  </div>
+                  <p className="text-xs text-[var(--text-tertiary)]">{p.desc}</p>
+                </button>
+              )
+            })}
           </div>
         </motion.div>
 

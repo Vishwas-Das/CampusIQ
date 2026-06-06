@@ -283,13 +283,16 @@ export default function ConfidenceCoachPage() {
       setPreviewUrl(null)
       setPreviewBlob(null)
     }
+    // Start SpeechRecognition FIRST. If MediaRecorder claims the mic stream
+    // before SR initializes, Chrome can leave SR with silence — same bug we
+    // hit in the Mock Interview voice mode.
     speech.reset()
-    await recorder.start()
     if (speech.supported) {
       speech.start()
     }
-    // Spin up MediaPipe tracking once the camera stream is live so we can
-    // sample eye-contact + posture per frame and replace the placeholders.
+    await recorder.start()
+    // MediaPipe tracker can't run until the camera stream is live, so we
+    // start it after the recorder kicks in.
     if (recorder.stream) {
       void tracker.start(recorder.stream)
     }

@@ -818,7 +818,9 @@ def voice_turn(
             status_code=400, detail="Interview is already completed or abandoned"
         )
 
-    # 1. Obtain the candidate's transcript — browser-provided or Whisper
+    # 1. Obtain the candidate's transcript — browser-provided wins, then
+    # ElevenLabs / Whisper, else give a friendlier hint.
+    transcribed = ""
     if transcript_override and transcript_override.strip():
         transcribed = transcript_override.strip()
     elif speech.is_asr_available():
@@ -827,9 +829,9 @@ def voice_turn(
         raise HTTPException(
             status_code=503,
             detail=(
-                "Voice interviews need either OPENAI_API_KEY on the server "
-                "or a browser-side transcript. Try a Chrome browser so the "
-                "Web Speech API can transcribe client-side."
+                "Voice transcription is unavailable. Either let the browser "
+                "transcribe (Chrome / Edge support this), or set "
+                "OPENAI_API_KEY / ELEVENLABS_API_KEY on the server."
             ),
         )
 

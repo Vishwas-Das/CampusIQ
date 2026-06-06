@@ -85,7 +85,7 @@ def suggest_edit(
             f"CURRENT chunk:\n---\n{top.chunk_text}\n---\n\n"
             f"STATEMENT (the new fact to incorporate):\n{statement}"
         )
-        rewritten = claude_client.generate_completion(
+        rewritten = claude_client.generate_completion_cached(
             REWRITE_SYSTEM,
             rewrite_prompt,
             max_tokens=1200,
@@ -109,7 +109,7 @@ def suggest_edit(
 
     # No clear match — propose creating a new chunk.
     phrase_prompt = f"STATEMENT to phrase as official document text:\n{statement}"
-    proposed = claude_client.generate_completion(
+    proposed = claude_client.generate_completion_cached(
         PHRASE_NEW_SYSTEM,
         phrase_prompt,
         max_tokens=800,

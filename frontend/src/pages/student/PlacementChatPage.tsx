@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { motion, type Variants } from 'framer-motion'
-import { AlertCircle, Info, Loader2, Plus } from 'lucide-react'
+import { AlertCircle, Info, Loader2, MessageSquare, Plus, Trash2 } from 'lucide-react'
 import Card, { CardHeader, CardTitle, CardLabel } from '../../components/ui/Card'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
@@ -39,6 +39,8 @@ export default function PlacementChatPage() {
   const [streaming, setStreaming] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [profile, setProfile] = useState<User | null>(null)
+  // ALL past Placement Chat sessions — preserves history when "New chat" fires.
+  const [sessions, setSessions] = useState<ChatSession[]>([])
   const abortRef = useRef<AbortController | null>(null)
 
   useEffect(() => {
@@ -53,16 +55,17 @@ export default function PlacementChatPage() {
         if (cancelled) return
         if (me) setProfile(me)
 
-        let s: ChatSession
-        if (existingSessions.length > 0) {
-          s = existingSessions[0]!
-        } else {
-          s = await chatApi.createSession({ chat_type: 'placement_chatbot' })
+        let list = existingSessions
+        if (list.length === 0) {
+          const fresh = await chatApi.createSession({ chat_type: 'placement_chatbot' })
+          list = [fresh]
         }
         if (cancelled) return
-        setSession(s)
+        setSessions(list)
 
-        const full = await chatApi.getSession(s.id)
+        const active = list[0]!
+        setSession(active)
+        const full = await chatApi.getSession(active.id)
         if (cancelled) return
         setMessages(full.messages.map(backendMessageToLayout))
       } catch (err) {
@@ -82,6 +85,54 @@ export default function PlacementChatPage() {
       abortRef.current?.abort()
     }
   }, [])
+
+  const handleSelectSession = async (target: ChatSession) => {
+    if (streaming || loading || target.id === session?.id) return
+    abortRef.current?.abort()
+    abortRef.current = null
+    setLoading(true)
+    setMessages([])
+    setError(null)
+    try {
+      const full = await chatApi.getSession(target.id)
+      setSession(target)
+      setMessages(full.messages.map(backendMessageToLayout))
+    } catch (err) {
+      setError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not load that chat',
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const handleDeleteSession = async (target: ChatSession) => {
+    if (streaming || loading) return
+    if (!window.confirm('Delete this chat? Messages will be lost.')) return
+    try {
+      await chatApi.deleteSession(target.id)
+      const remaining = sessions.filter((s) => s.id !== target.id)
+      setSessions(remaining)
+      if (session?.id === target.id) {
+        if (remaining.length > 0) {
+          await handleSelectSession(remaining[0]!)
+        } else {
+          const fresh = await chatApi.createSession({ chat_type: 'placement_chatbot' })
+          setSessions([fresh])
+          setSession(fresh)
+          setMessages([])
+        }
+      }
+    } catch (err) {
+      setError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not delete that chat',
+      )
+    }
+  }
 
   const handleSend = async (text: string) => {
     if (!session || streaming) return
@@ -112,9 +163,22 @@ export default function PlacementChatPage() {
           })
         },
       })
-      // Refresh to pull the persisted citations
+      // Refresh to pull the persisted citations + backend-auto-generated title.
       const refreshed = await chatApi.getSession(session.id)
       setMessages(refreshed.messages.map(backendMessageToLayout))
+      const refreshedSession: ChatSession = {
+        id: refreshed.id,
+        user_id: refreshed.user_id,
+        chat_type: refreshed.chat_type,
+        subject_id: refreshed.subject_id,
+        title: refreshed.title,
+        created_at: refreshed.created_at,
+        last_message_at: refreshed.last_message_at,
+      }
+      setSession(refreshedSession)
+      setSessions((prev) =>
+        prev.map((s) => (s.id === refreshed.id ? refreshedSession : s)),
+      )
     } catch (err) {
       if ((err as Error).name === 'AbortError') return
       setError(
@@ -134,6 +198,8 @@ export default function PlacementChatPage() {
     setError(null)
     try {
       const s = await chatApi.createSession({ chat_type: 'placement_chatbot' })
+      // Prepend to the list so old chats remain accessible from the sidebar.
+      setSessions((prev) => [s, ...prev])
       setSession(s)
     } catch (err) {
       setError(
@@ -209,9 +275,70 @@ export default function PlacementChatPage() {
           )}
         </div>
       </Card>
-      <Button variant="secondary" size="sm" icon={Plus} onClick={() => void handleNewChat()}>
-        New chat
-      </Button>
+
+      {/* Past chats — same pattern as Note Assistant / CollegeGPT.
+          "New chat" creates a new session without losing the old ones. */}
+      <div className="space-y-2">
+        <Button
+          variant="secondary"
+          size="sm"
+          icon={Plus}
+          className="w-full justify-start"
+          onClick={() => void handleNewChat()}
+          disabled={streaming || loading}
+        >
+          New chat
+        </Button>
+        {sessions.length > 0 && (
+          <>
+            <div className="flex items-center justify-between gap-2 px-2 pt-2">
+              <span className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider">
+                Chats
+              </span>
+              <span className="text-[10px] text-[var(--text-tertiary)]">
+                {sessions.length}
+              </span>
+            </div>
+            <div className="space-y-1 max-h-72 overflow-y-auto">
+              {sessions.map((s) => {
+                const isActive = s.id === session?.id
+                const label = s.title?.trim() || (isActive ? 'New chat' : 'Untitled chat')
+                return (
+                  <div
+                    key={s.id}
+                    className={`group flex items-center justify-between gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors ${
+                      isActive
+                        ? 'bg-primary/10 text-[var(--text-primary)]'
+                        : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]'
+                    }`}
+                    onClick={() => void handleSelectSession(s)}
+                  >
+                    <div className="flex items-center gap-2 min-w-0 flex-1">
+                      <MessageSquare
+                        className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-primary' : 'text-[var(--text-tertiary)]'}`}
+                      />
+                      <span className="text-xs truncate" title={label}>
+                        {label}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        void handleDeleteSession(s)
+                      }}
+                      className="opacity-0 group-hover:opacity-100 text-[var(--text-tertiary)] hover:text-danger transition-opacity"
+                      aria-label="Delete chat"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
+                )
+              })}
+            </div>
+          </>
+        )}
+      </div>
     </motion.div>
   )
 

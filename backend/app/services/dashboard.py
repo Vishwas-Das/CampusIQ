@@ -6,12 +6,14 @@ feed, and a feed of recent XP events into a single response.
 from __future__ import annotations
 
 import uuid
+from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from app.models.content import Announcement
 from app.models.gamification import XPEvent, XPEventType
 from app.models.community import Doubt, DoubtAnswer
 from app.models.quiz import Quiz, QuizAttempt
@@ -38,9 +40,15 @@ from app.schemas.dashboard import (
     RecentUploadRow,
     StudentDetailResponse,
     StudentQuizScore,
+    MissedQuestionRow,
+    ScoreBucketRow,
+    SubjectPerformanceRow,
     TaskItemResponse,
+    TeacherActivityItem,
+    TeacherAnalyticsResponse,
     TeacherDashboardResponse,
     TeacherStat,
+    TopicAccuracyRow,
     UserBreakdownRow,
     XPProgress,
 )
@@ -160,6 +168,293 @@ def get_student_dashboard(db: Session, user: User) -> DashboardResponse:
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+# ════════════════════════════════════════════════════════════════
+# Teacher per-subject analytics (drill-down inside Class Performance)
+# ════════════════════════════════════════════════════════════════
+
+# Score bins for the distribution histogram. Five even buckets makes the
+# chart readable; finer-grained bins create a sparse histogram with most
+# columns at zero.
+_SCORE_BUCKETS = [
+    ("0–20%", 0, 20),
+    ("21–40%", 21, 40),
+    ("41–60%", 41, 60),
+    ("61–80%", 61, 80),
+    ("81–100%", 81, 100),
+]
+
+
+def get_teacher_analytics(
+    db: Session,
+    user: User,
+    *,
+    subject_id: uuid.UUID | None = None,
+) -> TeacherAnalyticsResponse:
+    """Compute weakest-topic, most-missed-question, and score-distribution
+    breakdowns for the given teacher and (optionally) a single subject.
+
+    subject_id=None means "all of this teacher's subjects combined".
+    """
+    if user.role != UserRole.TEACHER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only teachers can view their own class analytics.",
+        )
+
+    # Look up the subject row once if filtering, so the response carries the
+    # subject's code/name for the frontend header.
+    subject: Subject | None = None
+    if subject_id is not None:
+        subject = db.get(Subject, subject_id)
+        if subject is None or subject.teacher_id != user.id:
+            raise HTTPException(
+                status_code=404, detail="Subject not found or not yours."
+            )
+
+    # Pull every attempt on this teacher's quizzes (optionally scoped to one
+    # subject). We need both the attempt (for score + answers JSON) and the
+    # quiz (for title) to build the most-missed-questions list.
+    stmt = (
+        select(QuizAttempt, Quiz)
+        .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+        .where(Quiz.created_by_id == user.id)
+    )
+    if subject_id is not None:
+        stmt = stmt.where(Quiz.subject_id == subject_id)
+    rows = db.execute(stmt).all()
+
+    if not rows:
+        return TeacherAnalyticsResponse(
+            subject_id=subject_id,
+            subject_code=subject.code if subject else None,
+            subject_name=subject.name if subject else None,
+        )
+
+    # ── Score distribution ──
+    # Count how many attempts fall in each bucket. Inclusive on both ends so
+    # 20 lands in 0–20 and 21 lands in 21–40 (no gap).
+    buckets = {label: 0 for label, _, _ in _SCORE_BUCKETS}
+    for attempt, _quiz in rows:
+        score = float(attempt.score)
+        for label, lo, hi in _SCORE_BUCKETS:
+            if lo <= score <= hi:
+                buckets[label] += 1
+                break
+
+    # ── Walk the answers JSON to gather per-question + per-topic accuracy ──
+    # Each attempt.answers is a list of dicts: {question_id, is_correct, topic, ...}
+    topic_correct: dict[str, int] = defaultdict(int)
+    topic_total: dict[str, int] = defaultdict(int)
+    q_correct: dict[str, int] = defaultdict(int)
+    q_total: dict[str, int] = defaultdict(int)
+    q_meta: dict[str, dict] = {}  # question_id -> {question_text, quiz_id, quiz_title}
+
+    for attempt, quiz in rows:
+        for ans in (attempt.answers or []):
+            qid = str(ans.get("question_id") or "")
+            if not qid:
+                continue
+            is_correct = bool(ans.get("is_correct"))
+            topic = (ans.get("topic") or "General").strip() or "General"
+
+            topic_total[topic] += 1
+            if is_correct:
+                topic_correct[topic] += 1
+
+            q_total[qid] += 1
+            if is_correct:
+                q_correct[qid] += 1
+            # Remember meta from the most recent attempt — we'll resolve
+            # question_text from the DB later (cheaper to batch).
+            q_meta[qid] = {
+                "quiz_id": str(quiz.id),
+                "quiz_title": quiz.title,
+            }
+
+    # ── Build weakest topics: ascending by accuracy, top 5. Require >=2
+    # attempts so a single fluke wrong doesn't pollute the list. ──
+    topic_rows: list[TopicAccuracyRow] = []
+    for topic, total in topic_total.items():
+        if total < 2:
+            continue
+        correct = topic_correct[topic]
+        accuracy = (correct / total) * 100
+        topic_rows.append(
+            TopicAccuracyRow(
+                topic=topic,
+                attempts=total,
+                correct=correct,
+                accuracy_pct=round(accuracy, 1),
+            )
+        )
+    topic_rows.sort(key=lambda r: r.accuracy_pct)
+    weakest_topics = topic_rows[:5]
+
+    # ── Build most missed questions: fetch text for the top candidates,
+    # then sort ascending by accuracy. ──
+    candidate_ids = [qid for qid, total in q_total.items() if total >= 2]
+    question_text_map: dict[str, str] = {}
+    if candidate_ids:
+        from app.models.quiz import Question
+        # We need to filter by UUID. Convert + bulk SELECT.
+        try:
+            uuid_list = [uuid.UUID(q) for q in candidate_ids]
+        except (ValueError, AttributeError):
+            uuid_list = []
+        if uuid_list:
+            qrows = db.execute(
+                select(Question.id, Question.question_text)
+                .where(Question.id.in_(uuid_list))
+            ).all()
+            question_text_map = {str(qid): text for qid, text in qrows}
+
+    missed_rows: list[MissedQuestionRow] = []
+    for qid in candidate_ids:
+        text = question_text_map.get(qid)
+        meta = q_meta.get(qid, {})
+        if not text or "quiz_id" not in meta:
+            continue
+        total = q_total[qid]
+        correct = q_correct[qid]
+        accuracy = (correct / total) * 100
+        try:
+            missed_rows.append(
+                MissedQuestionRow(
+                    question_id=uuid.UUID(qid),
+                    question_text=text,
+                    quiz_id=uuid.UUID(meta["quiz_id"]),
+                    quiz_title=meta["quiz_title"],
+                    times_asked=total,
+                    times_correct=correct,
+                    accuracy_pct=round(accuracy, 1),
+                )
+            )
+        except (ValueError, KeyError):
+            continue
+    missed_rows.sort(key=lambda r: r.accuracy_pct)
+    most_missed = missed_rows[:5]
+
+    # ── Score distribution rows in canonical order ──
+    distribution = [
+        ScoreBucketRow(bucket_label=label, bucket_min=lo, bucket_max=hi, count=buckets[label])
+        for label, lo, hi in _SCORE_BUCKETS
+    ]
+
+    return TeacherAnalyticsResponse(
+        subject_id=subject_id,
+        subject_code=subject.code if subject else None,
+        subject_name=subject.name if subject else None,
+        weakest_topics=weakest_topics,
+        most_missed_questions=most_missed,
+        score_distribution=distribution,
+        total_attempts=len(rows),
+    )
+
+
+def _teacher_recent_activity(
+    db: Session, user: User, *, limit: int = 15
+) -> list[TeacherActivityItem]:
+    """Aggregate the teacher's recent actions across documents, quizzes,
+    announcements, and student attempts on their quizzes.
+
+    We query each source separately (5 from each, sorted desc), merge them in
+    Python, then sort by occurred_at and trim to `limit`. Per-source cap keeps
+    each SELECT cheap; the final merge is O(N) over ≤20 items.
+    """
+    items: list[TeacherActivityItem] = []
+
+    # 1) Uploads — file name as title, subject as subtitle.
+    docs = db.execute(
+        select(Document, Subject)
+        .join(Subject, Subject.id == Document.subject_id)
+        .where(Document.uploaded_by_id == user.id)
+        .order_by(Document.created_at.desc())
+        .limit(5)
+    ).all()
+    for doc, subj in docs:
+        items.append(
+            TeacherActivityItem(
+                type="doc_uploaded",
+                title=f"Uploaded {doc.chapter or doc.title or doc.file_name}",
+                subtitle=subj.code if subj else None,
+                occurred_at=doc.created_at,
+                action_url="/teacher/documents",
+            )
+        )
+
+    # 2) Quizzes — both create and publish events. We don't have a separate
+    # published_at column, so we treat created_at as the moment for both;
+    # `is_published` toggles the message label.
+    quizzes = list(
+        db.scalars(
+            select(Quiz)
+            .where(Quiz.created_by_id == user.id)
+            .order_by(Quiz.created_at.desc())
+            .limit(5)
+        ).all()
+    )
+    for q in quizzes:
+        items.append(
+            TeacherActivityItem(
+                type="quiz_published" if q.is_published else "quiz_created",
+                title=f"{'Published' if q.is_published else 'Created'} quiz: {q.title}",
+                subtitle=f"{q.question_count if hasattr(q, 'question_count') else ''}" or None,
+                occurred_at=q.created_at,
+                action_url="/teacher/quizzes",
+            )
+        )
+
+    # 3) Announcements — title of the announcement is the headline.
+    announcements = list(
+        db.scalars(
+            select(Announcement)
+            .where(Announcement.author_id == user.id)
+            .order_by(Announcement.created_at.desc())
+            .limit(5)
+        ).all()
+    )
+    for a in announcements:
+        items.append(
+            TeacherActivityItem(
+                type="announcement",
+                title=f"Announced: {a.title}",
+                subtitle=(a.body[:80] + "…") if a.body and len(a.body) > 80 else a.body,
+                occurred_at=a.created_at,
+                action_url=None,
+            )
+        )
+
+    # 4) Student attempts on quizzes this teacher owns.
+    teacher_quiz_ids = list(
+        db.scalars(
+            select(Quiz.id).where(Quiz.created_by_id == user.id)
+        ).all()
+    )
+    if teacher_quiz_ids:
+        attempt_rows = db.execute(
+            select(QuizAttempt, Quiz, User)
+            .join(Quiz, Quiz.id == QuizAttempt.quiz_id)
+            .join(User, User.id == QuizAttempt.student_id)
+            .where(QuizAttempt.quiz_id.in_(teacher_quiz_ids))
+            .order_by(QuizAttempt.completed_at.desc())
+            .limit(5)
+        ).all()
+        for attempt, quiz, student in attempt_rows:
+            items.append(
+                TeacherActivityItem(
+                    type="attempt_received",
+                    title=f"{student.full_name} scored {float(attempt.score):.0f}% on “{quiz.title}”",
+                    subtitle=None,
+                    occurred_at=attempt.completed_at,
+                    action_url="/teacher/quizzes",
+                )
+            )
+
+    # Sort merged feed and trim. Python sort is stable, fine for ≤20 items.
+    items.sort(key=lambda it: it.occurred_at, reverse=True)
+    return items[:limit]
+
+
 def _document_status_value(status_enum: DocumentStatus | str) -> str:
     return status_enum.value if isinstance(status_enum, DocumentStatus) else str(status_enum)
 
@@ -218,6 +513,36 @@ def get_teacher_dashboard(db: Session, user: User) -> TeacherDashboardResponse:
     )
     class_average = round(float(avg_score), 2) if avg_score is not None else None
 
+    # Per-subject performance: group attempts on this teacher's quizzes by
+    # subject, then average + count. Only subjects with attempts appear
+    # (teachers don't want noise for subjects no one has touched yet).
+    subject_rows = db.execute(
+        select(
+            Subject.id,
+            Subject.code,
+            Subject.name,
+            func.count(QuizAttempt.id).label("attempts_count"),
+            func.count(func.distinct(QuizAttempt.student_id)).label("students_count"),
+            func.avg(QuizAttempt.score).label("avg_score"),
+        )
+        .join(Quiz, Quiz.subject_id == Subject.id)
+        .join(QuizAttempt, QuizAttempt.quiz_id == Quiz.id)
+        .where(Quiz.created_by_id == user.id)
+        .group_by(Subject.id, Subject.code, Subject.name)
+        .order_by(func.avg(QuizAttempt.score).desc())
+    ).all()
+    class_performance_by_subject = [
+        SubjectPerformanceRow(
+            subject_id=row.id,
+            subject_code=row.code,
+            subject_name=row.name,
+            attempts_count=int(row.attempts_count or 0),
+            students_count=int(row.students_count or 0),
+            avg_score=round(float(row.avg_score or 0), 2),
+        )
+        for row in subject_rows
+    ]
+
     stats = [
         TeacherStat(label="TOTAL STUDENTS", value=str(students_total)),
         TeacherStat(label="DOCUMENTS", value=str(documents_count)),
@@ -256,7 +581,9 @@ def get_teacher_dashboard(db: Session, user: User) -> TeacherDashboardResponse:
         department=teacher_profile.department_name if teacher_profile else None,
         stats=stats,
         recent_uploads=recent_uploads,
+        recent_activity=_teacher_recent_activity(db, user, limit=15),
         class_average=class_average,
+        class_performance_by_subject=class_performance_by_subject,
         students_total=int(students_total),
     )
 

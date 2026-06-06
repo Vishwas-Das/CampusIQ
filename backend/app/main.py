@@ -6,9 +6,13 @@ from pathlib import Path
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app.api.router import api_router
 from app.core.config import get_settings
+from app.core.rate_limit import limiter
 
 settings = get_settings()
 
@@ -76,6 +80,14 @@ def create_application() -> FastAPI:
         description="CampusIQ — AI-powered LMS + placement prep for engineering students.",
         lifespan=lifespan,
     )
+
+    # ── Rate limiting (lever 4) ──
+    # slowapi requires the Limiter on app.state and registers itself via
+    # SlowAPIMiddleware. The exception handler turns RateLimitExceeded into
+    # a clean 429 with `{"error": "Rate limit exceeded: ..."}` JSON.
+    application.state.limiter = limiter
+    application.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    application.add_middleware(SlowAPIMiddleware)
 
     # CORS — allow frontend origins
     application.add_middleware(

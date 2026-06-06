@@ -4,6 +4,7 @@ All models must be imported here so Alembic picks them up during `revision --aut
 """
 
 from app.core.database import Base
+from app.models.ai_cache import AIResponseCache, AIUsageLog
 from app.models.algorithm import (
     CompanySkillRequirement,
     NotificationDelivery,
@@ -50,7 +51,7 @@ from app.models.placement import (
     MockInterviewSession,
     Resume,
 )
-from app.models.quiz import Difficulty, Question, QuestionType, Quiz, QuizAttempt
+from app.models.quiz import Difficulty, Question, QuestionFlag, QuestionType, Quiz, QuizAttempt
 from app.models.user import (
     College,
     Document,
@@ -64,6 +65,9 @@ from app.models.user import (
 
 __all__ = [
     "Base",
+    # AI cache + usage tracking
+    "AIResponseCache",
+    "AIUsageLog",
     # Users
     "College",
     "User",
@@ -89,6 +93,7 @@ __all__ = [
     "Quiz",
     "Question",
     "QuizAttempt",
+    "QuestionFlag",
     "Difficulty",
     "QuestionType",
     # Community

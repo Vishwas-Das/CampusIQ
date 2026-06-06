@@ -9,7 +9,7 @@ from fastapi import HTTPException, UploadFile, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.content import DocumentChunk
+from app.models.content import Announcement, AnnouncementTarget, DocumentChunk
 from app.models.user import Document, DocumentStatus, Subject, User, UserRole
 from app.schemas.document import (
     CompressionStats,
@@ -25,14 +25,33 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[2]  # backend/
 UPLOAD_ROOT = _BACKEND_ROOT / "uploads"
 ALLOWED_CONTENT_TYPES: set[str] = {
     "application/pdf",
-    "application/msword",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",  # .docx
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",  # .pptx
-    "application/vnd.ms-powerpoint",  # .ppt
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # .xlsx
+    "application/rtf",
+    "text/rtf",
+    "text/html",
     "text/plain",
     "text/markdown",
+    "text/x-markdown",
+    # Some browsers leave content_type empty for direct file picks — we still
+    # accept those because we re-validate by extension below.
+    "",
 }
-ALLOWED_EXTENSIONS: set[str] = {".pdf", ".doc", ".docx", ".ppt", ".pptx", ".txt", ".md"}
+# Legacy binary Office formats (.doc, .ppt, .xls) are deliberately excluded —
+# they need LibreOffice/pywin32 to convert, which is not in this stack. Users
+# should "Save As" → modern XML format before upload.
+ALLOWED_EXTENSIONS: set[str] = {
+    ".pdf",
+    ".docx",
+    ".pptx",
+    ".xlsx",
+    ".html",
+    ".htm",
+    ".rtf",
+    ".txt",
+    ".md",
+}
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
 
 
@@ -113,6 +132,8 @@ def _to_response(document: Document, *, db: Session | None = None) -> DocumentRe
         content_type=document.content_type,
         file_size_bytes=document.file_size_bytes,
         summary=document.summary,
+        chapter=document.chapter,
+        description=document.description,
         processing_status=document.processing_status.value,
         created_at=document.created_at,
         compression_stats=stats,
@@ -134,6 +155,8 @@ def _to_response_with_subject(
         content_type=document.content_type,
         file_size_bytes=document.file_size_bytes,
         summary=document.summary,
+        chapter=document.chapter,
+        description=document.description,
         processing_status=document.processing_status.value,
         created_at=document.created_at,
         subject_code=subject.code,
@@ -225,6 +248,8 @@ def upload_document(
     user: User,
     *,
     title: str | None = None,
+    chapter: str | None = None,
+    description: str | None = None,
 ) -> DocumentResponse:
     """Validate + save a file to disk, then create a Document row.
 
@@ -286,6 +311,9 @@ def upload_document(
     # Create the DB row. processing_status stays 'pending' until Phase 7 kicks off processing.
     # Student uploads are scoped to the uploader; teacher/admin uploads stay public.
     owner_student_id = user.id if user.role == UserRole.STUDENT else None
+    chapter_clean = (chapter or "").strip() or None
+    description_clean = (description or "").strip() or None
+
     document = Document(
         subject_id=subject.id,
         uploaded_by_id=user.id,
@@ -295,11 +323,36 @@ def upload_document(
         storage_path=str(storage_path.resolve()),
         content_type=file.content_type,
         file_size_bytes=bytes_written,
+        chapter=chapter_clean,
+        description=description_clean,
         processing_status=DocumentStatus.PENDING,
     )
     db.add(document)
     db.commit()
     db.refresh(document)
+
+    # When a teacher/admin uploads a public doc WITH an announcement message,
+    # broadcast it to the subject's students via an Announcement row. The
+    # Dashboard's ANNOUNCEMENTS card surfaces these automatically.
+    # Students uploading private notes don't trigger this — their uploads
+    # aren't a classroom-wide event.
+    if (
+        description_clean
+        and owner_student_id is None
+        and user.role in (UserRole.TEACHER, UserRole.ADMIN)
+    ):
+        label = chapter_clean or document.title or safe_name
+        announcement = Announcement(
+            author_id=user.id,
+            subject_id=subject.id,
+            college_id=user.college_id,
+            title=f"New notes: {label}",
+            body=description_clean,
+            target=AnnouncementTarget.SUBJECT,
+        )
+        db.add(announcement)
+        db.commit()
+
     return _to_response(document, db=db)
 
 

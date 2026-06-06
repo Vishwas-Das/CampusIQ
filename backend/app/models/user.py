@@ -210,6 +210,10 @@ class Document(Base):
     content_type: Mapped[str | None] = mapped_column(String(100))
     file_size_bytes: Mapped[int | None] = mapped_column(Integer)
     summary: Mapped[str | None] = mapped_column(String)
+    # Teacher-supplied metadata (Phase 7 enhancement). When set, `chapter`
+    # also becomes the default filename when a student downloads the doc.
+    chapter: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    description: Mapped[str | None] = mapped_column(String, nullable=True)
     processing_status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus, name="document_status", values_callable=_enum_values),
         default=DocumentStatus.PENDING,

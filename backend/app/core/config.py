@@ -59,6 +59,13 @@ class Settings(BaseSettings):
     # ── Rate limiting (used in Phase 21) ──
     claude_requests_per_minute: int = 20  # per-user limit to prevent runaway costs
 
+    # ── Daily Claude spend cap (lever 5) ──
+    # Maximum USD spend per UTC day across ALL Claude calls. When the day's
+    # logged spend reaches this number, generate_completion gracefully returns
+    # an empty string instead of calling the API. 0 = unlimited (default for
+    # dev). Set explicitly in production.
+    anthropic_daily_budget_usd: float = 0.0
+
     # ── Audio storage retention (Phase 6) ──
     # Recordings older than this are purged on a periodic background task.
     audio_retention_days: int = 7

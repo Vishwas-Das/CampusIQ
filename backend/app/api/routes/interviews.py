@@ -4,9 +4,10 @@ from __future__ import annotations
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 
 from app.api.deps import CurrentUser, DbSession
+from app.core.rate_limit import limiter
 from app.models.placement import InterviewMode, InterviewPersona
 from app.schemas.mock_interview import (
     InterviewMessageRequest,
@@ -91,7 +92,9 @@ def get_interview(
     response_model=InterviewTurnResponse,
     summary="Submit a candidate answer and get the interviewer's next turn",
 )
+@limiter.limit("30/minute")
 def submit_message(
+    request: Request,
     session_id: uuid.UUID,
     data: InterviewMessageRequest,
     db: DbSession,
@@ -143,7 +146,9 @@ def voice_capabilities() -> VoiceCapabilitiesResponse:
     response_model=InterviewVoiceTurnResponse,
     summary="Submit an audio answer (webm/wav/mp3) and get an audio reply",
 )
+@limiter.limit("30/minute")
 async def submit_voice_turn(
+    request: Request,
     session_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,

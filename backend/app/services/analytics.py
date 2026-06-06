@@ -26,7 +26,12 @@ from app.schemas.analytics import (
 
 
 WEAK_TOPIC_THRESHOLD = 60.0
-WEAK_TOPIC_MIN_ATTEMPTS = 2
+# Lowered from 2 -> 1 so even single-attempt subjects (e.g. a quiz where
+# every question has a unique topic) surface in the weak-topics list. The
+# old threshold filtered ALL topics out of small quizzes, making the page
+# look broken. With real classroom-sized data this self-balances — many
+# students answering the same questions = the genuine weak spots dominate.
+WEAK_TOPIC_MIN_ATTEMPTS = 1
 SCORE_BUCKETS = [
     (0, 19, "0-19"),
     (20, 39, "20-39"),

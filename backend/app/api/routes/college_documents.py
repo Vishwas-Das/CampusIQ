@@ -7,9 +7,10 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, UploadFile, status
 
 from app.api.deps import CurrentUser, DbSession, require_role
+from app.core.rate_limit import limiter
 from app.models.content import CollegeDocumentCategory
 from app.schemas.college_document import (
     ChunkCreate,
@@ -233,7 +234,9 @@ def delete_chunk(
     dependencies=[Depends(require_role("admin"))],
     summary="Admin: ask the AI to locate and rewrite a chunk for a natural-language update",
 )
+@limiter.limit("30/hour")
 def suggest_knowledge_update(
+    request: Request,
     body: KnowledgeSuggestRequest,
     db: DbSession,
     current_user: CurrentUser,

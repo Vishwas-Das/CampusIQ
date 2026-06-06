@@ -88,13 +88,98 @@ class RecentUploadRow(BaseModel):
     status: Literal["pending", "processing", "ready", "failed"]
 
 
+class TeacherActivityItem(BaseModel):
+    """One row in the teacher's RECENT ACTIVITY card.
+
+    `type` drives the icon shown. `action_url` is a frontend path the row
+    navigates to on click (e.g. /teacher/documents, /teacher/quizzes).
+    """
+
+    type: Literal[
+        "doc_uploaded",
+        "quiz_created",
+        "quiz_published",
+        "attempt_received",
+        "announcement",
+    ]
+    title: str
+    subtitle: str | None = None
+    occurred_at: datetime
+    action_url: str | None = None
+
+
+class TopicAccuracyRow(BaseModel):
+    """One row in the "Weakest topics" list. Lower accuracy = weaker."""
+
+    topic: str
+    attempts: int
+    correct: int
+    accuracy_pct: float
+
+
+class MissedQuestionRow(BaseModel):
+    """One question that the class struggles with most."""
+
+    question_id: uuid.UUID
+    question_text: str
+    quiz_id: uuid.UUID
+    quiz_title: str
+    times_asked: int
+    times_correct: int
+    accuracy_pct: float
+
+
+class ScoreBucketRow(BaseModel):
+    """One bin in the score distribution histogram."""
+
+    bucket_label: str  # e.g. "0–20%", "21–40%"
+    bucket_min: int    # inclusive
+    bucket_max: int    # inclusive
+    count: int
+
+
+class TeacherAnalyticsResponse(BaseModel):
+    """Per-subject (or all-subjects) analytics for the teacher dashboard.
+
+    Returned by GET /dashboard/teacher/analytics?subject_id=... When
+    subject_id is omitted, the response aggregates across every subject the
+    teacher owns.
+    """
+
+    subject_id: uuid.UUID | None = None
+    subject_code: str | None = None
+    subject_name: str | None = None
+    weakest_topics: list[TopicAccuracyRow] = []
+    most_missed_questions: list[MissedQuestionRow] = []
+    score_distribution: list[ScoreBucketRow] = []
+    total_attempts: int = 0
+
+
+class SubjectPerformanceRow(BaseModel):
+    """One row in the per-subject class performance table.
+
+    `avg_score` is the average score across every attempt on every quiz that
+    belongs to this subject + the teacher. Only subjects with at least one
+    attempt show up — we don't render placeholder rows for empty subjects.
+    """
+
+    subject_id: uuid.UUID
+    subject_code: str
+    subject_name: str
+    attempts_count: int
+    students_count: int
+    avg_score: float
+
+
 class TeacherDashboardResponse(BaseModel):
     teacher_id: uuid.UUID
     full_name: str
     department: str | None
     stats: list[TeacherStat]
     recent_uploads: list[RecentUploadRow]
+    recent_activity: list[TeacherActivityItem] = []
     class_average: float | None
+    class_performance_by_subject: list[SubjectPerformanceRow] = []
     students_total: int
 
 

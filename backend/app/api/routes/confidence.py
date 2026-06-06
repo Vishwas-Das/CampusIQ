@@ -5,10 +5,11 @@ import uuid
 from decimal import Decimal
 from typing import Annotated
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile, status
 from sqlalchemy import select
 
 from app.api.deps import CurrentUser, DbSession
+from app.core.rate_limit import limiter
 from app.models.gamification import XPEventType
 from app.models.placement import ConfidenceSession
 from app.models.user import UserRole
@@ -70,7 +71,9 @@ def _to_response(row: ConfidenceSession) -> ConfidenceSessionResponse:
     status_code=status.HTTP_201_CREATED,
     summary="Analyse a confidence-coach recording",
 )
+@limiter.limit("30/minute")
 async def create_session(
+    request: Request,
     db: DbSession,
     current_user: CurrentUser,
     audio: Annotated[UploadFile, File(description="Audio recording (webm/mp3/wav)")],

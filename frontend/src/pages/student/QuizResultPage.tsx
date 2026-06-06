@@ -2,17 +2,22 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { motion, type Variants } from 'framer-motion'
 import {
+  AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  Flag,
+  Loader2,
   Sparkles,
   TrendingDown,
   TrendingUp,
+  X as XIcon,
   XCircle,
 } from 'lucide-react'
 import Card, { CardHeader, CardTitle } from '../../components/ui/Card'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import ProgressBar from '../../components/ui/ProgressBar'
+import { ApiError, quizzesApi } from '../../api/client'
 import type { QuizAttemptResponse } from '../../types'
 
 const stagger: Variants = { animate: { transition: { staggerChildren: 0 } } }
@@ -37,18 +42,151 @@ export default function QuizResultPage() {
   const { quizId, attemptId } = useParams<{ quizId: string; attemptId: string }>()
   const navigate = useNavigate()
   const [result, setResult] = useState<QuizAttemptResponse | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  // ── Flag state (mirror of the taking page) ──
+  const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set())
+  const [flagReasonsById, setFlagReasonsById] = useState<Record<string, string | null>>({})
+  const [flagPopoverFor, setFlagPopoverFor] = useState<string | null>(null)
+  const [flagPopoverReason, setFlagPopoverReason] = useState('')
+  const [flagBusy, setFlagBusy] = useState(false)
+  const [flagError, setFlagError] = useState<string | null>(null)
+
+  // After-submit flagging is allowed for FLAG_AFTER_SUBMIT_DAYS days.
+  // Past that, the icon still shows the flag state but clicking it doesn't
+  // open the popover. Backend ALSO enforces this (frontend is just UX).
+  const FLAG_AFTER_SUBMIT_DAYS = 3
+  const canFlagAfterSubmit = useMemo(() => {
+    if (!result) return false
+    const submitted = new Date(result.completed_at).getTime()
+    const ageDays = (Date.now() - submitted) / (1000 * 60 * 60 * 24)
+    return ageDays <= FLAG_AFTER_SUBMIT_DAYS
+  }, [result])
 
   useEffect(() => {
     if (!attemptId) return
+    let cancelled = false
+
+    // FAST path: read the freshly-submitted result from session storage so we
+    // don't double-fetch when the student just finished the quiz.
     const cached = sessionStorage.getItem(`quiz-result-${attemptId}`)
     if (cached) {
       try {
         setResult(JSON.parse(cached) as QuizAttemptResponse)
+        setLoading(false)
+        return
+      } catch {
+        // Fall through to the network fetch.
+      }
+    }
+
+    // SLOW path: cache miss (student came back later — day before exam, etc.)
+    // Hit the new GET /attempts/{id} endpoint and render the same shape.
+    void (async () => {
+      try {
+        const data = await quizzesApi.getAttempt(attemptId)
+        if (!cancelled) setResult(data)
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof ApiError && typeof err.detail === 'string'
+              ? err.detail
+              : 'Could not load this attempt',
+          )
+        }
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [attemptId])
+
+  // Load existing flags once we know the quiz ID. Silent on errors —
+  // missing flag state is non-blocking for the review experience.
+  useEffect(() => {
+    if (!quizId || !result) return
+    void (async () => {
+      try {
+        const flags = await quizzesApi.myFlagsForQuiz(quizId)
+        const ids = new Set(flags.map((f) => f.question_id))
+        const reasons: Record<string, string | null> = {}
+        for (const f of flags) reasons[f.question_id] = f.reason
+        setFlaggedIds(ids)
+        setFlagReasonsById(reasons)
       } catch {
         // ignore
       }
+    })()
+  }, [quizId, result])
+
+  const openFlagPopover = (qid: string) => {
+    if (!canFlagAfterSubmit) return
+    setFlagPopoverFor(qid)
+    setFlagPopoverReason(flagReasonsById[qid] ?? '')
+    setFlagError(null)
+  }
+  const closeFlagPopover = () => {
+    setFlagPopoverFor(null)
+    setFlagPopoverReason('')
+    setFlagError(null)
+  }
+  const saveFlag = async () => {
+    if (!quizId || !flagPopoverFor) return
+    setFlagBusy(true)
+    setFlagError(null)
+    const reason = flagPopoverReason.trim() || null
+    const qid = flagPopoverFor
+    try {
+      await quizzesApi.flagQuestion(quizId, qid, reason)
+      setFlaggedIds((prev) => {
+        const next = new Set(prev)
+        next.add(qid)
+        return next
+      })
+      setFlagReasonsById((prev) => ({ ...prev, [qid]: reason }))
+      closeFlagPopover()
+    } catch (err) {
+      setFlagError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not save the flag',
+      )
+    } finally {
+      setFlagBusy(false)
     }
-  }, [attemptId])
+  }
+  const removeFlag = async () => {
+    if (!quizId || !flagPopoverFor) return
+    setFlagBusy(true)
+    setFlagError(null)
+    const qid = flagPopoverFor
+    try {
+      await quizzesApi.unflagQuestion(quizId, qid)
+      setFlaggedIds((prev) => {
+        const next = new Set(prev)
+        next.delete(qid)
+        return next
+      })
+      setFlagReasonsById((prev) => {
+        const next = { ...prev }
+        delete next[qid]
+        return next
+      })
+      closeFlagPopover()
+    } catch (err) {
+      setFlagError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not remove the flag',
+      )
+    } finally {
+      setFlagBusy(false)
+    }
+  }
 
   const groupedByTopic = useMemo(() => {
     if (!result) return new Map<string, { correct: number; total: number }>()
@@ -63,12 +201,24 @@ export default function QuizResultPage() {
     return map
   }, [result])
 
+  if (loading) {
+    return (
+      <Card className="flex items-center gap-2 justify-center py-10 text-[var(--text-tertiary)]">
+        <Loader2 className="h-5 w-5 animate-spin" />
+        Loading attempt…
+      </Card>
+    )
+  }
+
   if (!result) {
     return (
       <Card className="space-y-3">
-        <p className="text-sm text-[var(--text-tertiary)]">
-          We couldn't find this attempt's result. It may have expired — try retaking the quiz.
-        </p>
+        <div className="flex items-center gap-2 text-danger">
+          <AlertCircle className="h-4 w-4" />
+          <span className="text-sm">
+            {error ?? "We couldn't find this attempt's result."}
+          </span>
+        </div>
         <Button variant="secondary" icon={ArrowLeft} onClick={() => navigate('/student/quizzes')}>
           Back to quizzes
         </Button>
@@ -169,8 +319,16 @@ export default function QuizResultPage() {
           <CardHeader>
             <CardTitle>Question Review</CardTitle>
           </CardHeader>
+          {!canFlagAfterSubmit && (
+            <p className="text-[11px] text-[var(--text-tertiary)] mb-3">
+              Flag window for this attempt has closed (3 days since submission).
+              Existing flags are still visible.
+            </p>
+          )}
           <ul className="space-y-4">
-            {result.graded_answers.map((g, i) => (
+            {result.graded_answers.map((g, i) => {
+              const isFlagged = flaggedIds.has(g.question_id)
+              return (
               <li key={g.question_id} className="space-y-2">
                 <div className="flex items-start gap-2">
                   {g.is_correct ? (
@@ -188,6 +346,30 @@ export default function QuizResultPage() {
                       </span>
                     )}
                   </div>
+                  {/* Flag pill — read-only after 3 days but still shows state */}
+                  <button
+                    type="button"
+                    onClick={() => openFlagPopover(g.question_id)}
+                    disabled={!canFlagAfterSubmit}
+                    className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs border transition-colors ${
+                      isFlagged
+                        ? 'border-warning/40 bg-warning/10 text-warning'
+                        : 'border-[var(--border-default)] text-[var(--text-tertiary)] hover:bg-[var(--bg-tertiary)] disabled:opacity-40 disabled:cursor-not-allowed'
+                    }`}
+                    title={
+                      !canFlagAfterSubmit
+                        ? 'Flag window closed (3 days since submit)'
+                        : isFlagged
+                          ? 'You flagged this — click to edit or remove'
+                          : 'Flag this question if it seems broken'
+                    }
+                  >
+                    <Flag
+                      className="h-3.5 w-3.5"
+                      fill={isFlagged ? 'currentColor' : 'none'}
+                    />
+                    {isFlagged ? 'Flagged' : 'Flag'}
+                  </button>
                 </div>
                 <div className="ml-6 space-y-1 text-xs">
                   <div>
@@ -208,8 +390,62 @@ export default function QuizResultPage() {
                     </p>
                   )}
                 </div>
+
+                {/* Inline flag popover — appears under the question being flagged. */}
+                {flagPopoverFor === g.question_id && (
+                  <div className="ml-6 rounded-lg border border-warning/30 bg-warning/5 p-3 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-semibold text-warning uppercase tracking-wider">
+                        Why are you flagging this?
+                      </span>
+                      <button
+                        type="button"
+                        onClick={closeFlagPopover}
+                        disabled={flagBusy}
+                        className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                      >
+                        <XIcon className="h-4 w-4" />
+                      </button>
+                    </div>
+                    <textarea
+                      value={flagPopoverReason}
+                      onChange={(e) => setFlagPopoverReason(e.target.value)}
+                      maxLength={1000}
+                      rows={2}
+                      placeholder='Optional — e.g. "Two options look correct"'
+                      className="w-full px-2 py-1.5 text-sm rounded-md bg-[var(--bg-secondary)] border border-[var(--border-default)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-warning resize-none"
+                      disabled={flagBusy}
+                    />
+                    {flagError && (
+                      <p className="text-xs text-danger">{flagError}</p>
+                    )}
+                    <div className="flex items-center justify-between gap-2">
+                      {isFlagged ? (
+                        <Button
+                          variant="danger"
+                          size="sm"
+                          onClick={() => void removeFlag()}
+                          disabled={flagBusy}
+                        >
+                          Remove flag
+                        </Button>
+                      ) : (
+                        <span />
+                      )}
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        onClick={() => void saveFlag()}
+                        disabled={flagBusy}
+                      >
+                        {flagBusy ? 'Saving…' : 'Save flag'}
+                      </Button>
+                    </div>
+                  </div>
+                )}
               </li>
-            ))}
+              )
+            })}
           </ul>
         </Card>
       </motion.div>
@@ -232,13 +468,14 @@ export default function QuizResultPage() {
         </motion.div>
       )}
 
-      <div className="flex justify-between gap-2">
+      <div className="flex justify-start gap-2">
         <Button variant="secondary" icon={ArrowLeft} onClick={() => navigate('/student/quizzes')}>
           Back to quizzes
         </Button>
-        <Button onClick={() => navigate(`/student/quizzes/${quizId}/take`)}>
-          Retake quiz
-        </Button>
+        {/* Retake button removed — students get exactly one attempt per quiz
+            (enforced on the backend via the 409 in submit_attempt). Allowing
+            "Retake quiz" here would have routed back to the take page only
+            for the backend to reject the submit. */}
       </div>
     </motion.div>
   )

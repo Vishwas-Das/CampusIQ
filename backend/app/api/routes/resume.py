@@ -1,9 +1,10 @@
 """Resume Builder endpoints (Phase 14, F6)."""
 from __future__ import annotations
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Request, status
 
 from app.api.deps import CurrentUser, DbSession
+from app.core.rate_limit import limiter
 from app.schemas.resume import (
     ATSScoreRequest,
     ATSScoreResponse,
@@ -74,7 +75,9 @@ def reset_resume_chat_history(
     response_model=ResumeChatResponse,
     summary="Send a message to the Resume Coach (one turn, returns updated content)",
 )
+@limiter.limit("20/hour")
 def chat_with_coach(
+    request: Request,
     data: ResumeChatRequest,
     db: DbSession,
     current_user: CurrentUser,
@@ -92,7 +95,9 @@ def chat_with_coach(
     response_model=ATSScoreResponse,
     summary="Score my resume against a pasted job description",
 )
+@limiter.limit("20/hour")
 def score_against_jd(
+    request: Request,
     data: ATSScoreRequest,
     db: DbSession,
     current_user: CurrentUser,

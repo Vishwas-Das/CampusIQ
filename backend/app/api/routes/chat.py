@@ -3,10 +3,11 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import CurrentUser, DbSession
+from app.core.rate_limit import limiter
 from app.models.chat import ChatType
 from app.models.user import UserRole
 from app.schemas.chat import (
@@ -152,7 +153,9 @@ def delete_session(
     summary="Send a user message and stream the assistant's RAG response",
     response_class=StreamingResponse,
 )
+@limiter.limit("30/minute")
 def send_message(
+    request: Request,
     session_id: uuid.UUID,
     data: ChatMessageRequest,
     db: DbSession,
@@ -193,7 +196,9 @@ def send_message(
     response_model=ChatMessageResponse,
     summary="Non-streaming version of /messages — returns the full assistant reply at once",
 )
+@limiter.limit("30/minute")
 def send_message_blocking(
+    request: Request,
     session_id: uuid.UUID,
     data: ChatMessageRequest,
     db: DbSession,

@@ -5,22 +5,27 @@ import {
   AlertCircle,
   BarChart3,
   Brain,
+  Download,
+  FileText,
   Loader2,
   Megaphone,
+  MessageSquare,
   Trophy,
   Zap,
   type LucideIcon,
 } from 'lucide-react'
 import Card, { CardLabel } from '../../components/ui/Card'
 import Badge from '../../components/ui/Badge'
+import Button from '../../components/ui/Button'
+import Modal from '../../components/ui/Modal'
 import ProgressBar from '../../components/ui/ProgressBar'
 import type { ProgressBarColor } from '../../components/ui/ProgressBar'
 import StatCard from '../../components/dashboard/StatCard'
 import ScoreRing from '../../components/dashboard/ScoreRing'
 import TaskFeed, { type Task } from '../../components/dashboard/TaskFeed'
 import ActivityFeed from '../../components/dashboard/ActivityFeed'
-import { ApiError, dashboardApi } from '../../api/client'
-import type { DashboardResponse } from '../../types'
+import { ApiError, dashboardApi, documentsApi } from '../../api/client'
+import type { DashboardResponse, DocumentWithSubject } from '../../types'
 
 // Start at full opacity — see PageTransition.tsx for why we never animate
 // opacity (rAF can be throttled). We still animate the y-translate.
@@ -53,6 +58,55 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Notes uploaded by teachers across this student's accessible subjects.
+  // Loaded in parallel with the dashboard so a slow document list doesn't
+  // block the main metrics.
+  const [notes, setNotes] = useState<DocumentWithSubject[]>([])
+  const [notesLoading, setNotesLoading] = useState(true)
+
+  // The note currently expanded in the preview modal (null = modal closed).
+  // We re-fetch by ID on open to get the summary text, which the list endpoint
+  // does include — so this is just a UI handle, no extra request needed.
+  const [previewNote, setPreviewNote] = useState<DocumentWithSubject | null>(null)
+  const [downloading, setDownloading] = useState(false)
+  const [downloadError, setDownloadError] = useState<string | null>(null)
+
+  const handleDownload = async (note: DocumentWithSubject) => {
+    setDownloading(true)
+    setDownloadError(null)
+    try {
+      // Authenticated fetch (browser won't send Bearer on a plain <a href>),
+      // then trigger a download by clicking a temporary anchor with the blob URL.
+      const { blob } = await documentsApi.downloadBlob(note.id)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      // Use the teacher's chapter name (the name they entered in the upload
+      // form) as the download filename — that's the meaningful label.
+      // Compute it client-side so we don't rely on Content-Disposition
+      // parsing (RFC 5987 encoded variants can leak %20 into the browser).
+      const ext = note.file_name.includes('.')
+        ? note.file_name.slice(note.file_name.lastIndexOf('.'))
+        : ''
+      const sanitisedChapter = note.chapter
+        ? note.chapter.replace(/[<>:"/\\|?*]/g, '').trim().replace(/\.+$/, '')
+        : ''
+      a.download = sanitisedChapter ? `${sanitisedChapter}${ext}` : note.file_name
+      document.body.appendChild(a)
+      a.click()
+      a.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      setDownloadError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not download the file',
+      )
+    } finally {
+      setDownloading(false)
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
     void (async () => {
@@ -71,6 +125,23 @@ export default function DashboardPage() {
         if (!cancelled) setLoading(false)
       }
     })()
+
+    // Fetch documents independently — failure here shouldn't blank the dashboard.
+    void (async () => {
+      try {
+        const docs = await documentsApi.list()
+        if (!cancelled) {
+          // Show only teacher-uploaded public docs (not the student's own
+          // private notes — those are scoped to the Note Assistant page).
+          setNotes(docs.filter((d) => d.owner_student_id === null))
+        }
+      } catch {
+        // Silent — notes card just stays empty
+      } finally {
+        if (!cancelled) setNotesLoading(false)
+      }
+    })()
+
     return () => {
       cancelled = true
     }
@@ -248,6 +319,72 @@ export default function DashboardPage() {
             </div>
           </Card>
         </motion.div>
+
+        {/* Notes uploaded by teachers — public docs across this student's subjects.
+            Click navigates to the Note Assistant where the student can chat with the doc. */}
+        <motion.div initial={fadeUpInitial} animate={fadeUpAnimate(0.5)}>
+          <CardLabel className="mb-3 block">NOTES UPLOADED</CardLabel>
+          {notesLoading ? (
+            <Card className="flex items-center gap-2 justify-center py-6 text-[var(--text-tertiary)]">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              <span className="text-sm">Loading notes…</span>
+            </Card>
+          ) : notes.length === 0 ? (
+            <Card>
+              <p className="text-sm text-[var(--text-tertiary)] text-center py-4">
+                No notes uploaded yet. Materials shared by your teachers will appear here.
+              </p>
+            </Card>
+          ) : (
+            <Card padding={false}>
+              <ul className="divide-y divide-[var(--border-primary)]">
+                {notes.slice(0, 5).map((n) => (
+                  <li
+                    key={n.id}
+                    onClick={() => {
+                      setDownloadError(null)
+                      setPreviewNote(n)
+                    }}
+                    className="px-4 py-3 flex items-center gap-3 text-sm cursor-pointer hover:bg-[var(--bg-tertiary)] transition-colors"
+                  >
+                    <FileText className="h-4 w-4 text-[var(--text-secondary)] shrink-0" />
+                    <div className="flex-1 min-w-0">
+                      <div className="truncate text-[var(--text-primary)]">
+                        {n.chapter || n.title || n.file_name}
+                      </div>
+                    </div>
+                    <Badge size="sm" variant="primary">
+                      {n.subject_code}
+                    </Badge>
+                    <Badge
+                      size="sm"
+                      variant={
+                        n.processing_status === 'ready'
+                          ? 'success'
+                          : n.processing_status === 'failed'
+                            ? 'danger'
+                            : 'warning'
+                      }
+                    >
+                      {n.processing_status}
+                    </Badge>
+                    <span className="text-xs text-[var(--text-tertiary)] tabular-nums">
+                      {relativeTime(n.created_at)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+              {notes.length > 5 && (
+                <button
+                  onClick={() => navigate('/student/notes')}
+                  className="w-full px-4 py-2 text-xs text-[var(--text-tertiary)] hover:text-[var(--text-primary)] border-t border-[var(--border-primary)] transition-colors"
+                >
+                  View all {notes.length} notes →
+                </button>
+              )}
+            </Card>
+          )}
+        </motion.div>
       </div>
 
       {/* Right Sidebar */}
@@ -332,6 +469,112 @@ export default function DashboardPage() {
           )}
         </Card>
       </motion.div>
+
+      {/* Note preview modal — opens when student clicks a row in NOTES UPLOADED.
+          Shows the AI summary + lets them download the file or open the chat. */}
+      <Modal
+        isOpen={previewNote !== null}
+        onClose={() => setPreviewNote(null)}
+        // Prefer the chapter (teacher-given name in the upload form) over
+        // the raw uploaded filename. Same precedence we use for the dashboard
+        // row label AND the download filename, so the student sees one
+        // consistent identity for this note across every surface.
+        title={
+          previewNote?.chapter ??
+          previewNote?.title ??
+          previewNote?.file_name ??
+          'Note'
+        }
+        size="lg"
+        footer={
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-xs text-danger min-h-[1rem]">
+              {downloadError}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setPreviewNote(null)
+                  navigate('/student/notes')
+                }}
+              >
+                <MessageSquare className="h-4 w-4" />
+                Open in Note Assistant
+              </Button>
+              <Button
+                variant="primary"
+                size="sm"
+                onClick={() => previewNote && void handleDownload(previewNote)}
+                disabled={downloading || !previewNote}
+              >
+                {downloading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
+                {downloading ? 'Downloading…' : 'Download'}
+              </Button>
+            </div>
+          </div>
+        }
+      >
+        {previewNote && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2 text-xs">
+              <Badge variant="primary" size="sm">
+                {previewNote.subject_code} · {previewNote.subject_name}
+              </Badge>
+              <Badge
+                size="sm"
+                variant={
+                  previewNote.processing_status === 'ready'
+                    ? 'success'
+                    : previewNote.processing_status === 'failed'
+                      ? 'danger'
+                      : 'warning'
+                }
+              >
+                {previewNote.processing_status}
+              </Badge>
+              {/* Only show the raw upload filename when the teacher didn't
+                  set a chapter. With a chapter, the modal title IS the
+                  identity — the raw name would just clutter and undermine
+                  the teacher-chosen label. */}
+              {!previewNote.chapter && (
+                <span className="text-[var(--text-tertiary)]">
+                  {previewNote.file_name}
+                </span>
+              )}
+              <span className="text-[var(--text-tertiary)]">
+                · {relativeTime(previewNote.created_at)}
+              </span>
+            </div>
+
+            <div>
+              <CardLabel className="mb-2 block">AI SUMMARY</CardLabel>
+              {previewNote.summary ? (
+                <p className="text-sm text-[var(--text-secondary)] leading-relaxed whitespace-pre-wrap">
+                  {previewNote.summary}
+                </p>
+              ) : previewNote.processing_status === 'ready' ? (
+                <p className="text-sm text-[var(--text-tertiary)] italic">
+                  No summary was generated for this document.
+                </p>
+              ) : previewNote.processing_status === 'failed' ? (
+                <p className="text-sm text-danger">
+                  This document failed to process. Ask the teacher to re-upload it.
+                </p>
+              ) : (
+                <p className="text-sm text-[var(--text-tertiary)] italic">
+                  This document is still being processed. The summary will appear here once it's ready.
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   )
 }

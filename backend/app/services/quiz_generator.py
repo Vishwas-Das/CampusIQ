@@ -82,12 +82,24 @@ def _gather_chunks(
     db: Session,
     *,
     subject_id: uuid.UUID,
-    document_id: uuid.UUID | None,
+    document_ids: list[uuid.UUID] | None,
 ) -> list[DocumentChunk]:
-    """Pull a reasonable amount of chunk text — bounded by MAX_CONTEXT_CHARS."""
+    """Pull a reasonable amount of chunk text — bounded by MAX_CONTEXT_CHARS.
+
+    Selection rules:
+        - document_ids is None or empty  -> every chunk in the subject
+        - document_ids has entries        -> only those documents' chunks
+                                             (uses SQL `WHERE document_id IN (...)`)
+    """
     stmt = db.query(DocumentChunk).join(Document, DocumentChunk.document_id == Document.id)
-    if document_id is not None:
-        stmt = stmt.filter(DocumentChunk.document_id == document_id)
+    if document_ids:
+        # `Column.in_(list)` builds `WHERE document_id IN (?, ?, ...)` for us.
+        # We ALSO keep the subject filter so a tampered client can't pass
+        # someone else's doc IDs across subjects.
+        stmt = stmt.filter(
+            DocumentChunk.document_id.in_(document_ids),
+            Document.subject_id == subject_id,
+        )
     else:
         stmt = stmt.filter(Document.subject_id == subject_id)
     chunks = stmt.order_by(DocumentChunk.chunk_index).all()
@@ -198,22 +210,34 @@ def generate_quiz(
     *,
     user: User,
     subject_id: uuid.UUID,
-    document_id: uuid.UUID | None,
+    document_ids: list[uuid.UUID] | None,
     num_questions: int,
     difficulty: Difficulty,
     topic_hint: str | None = None,
 ) -> Quiz:
-    """Generate and persist a draft quiz from course material."""
+    """Generate and persist a draft quiz from course material.
+
+    `document_ids` selects which documents' chunks feed Claude:
+      - None or empty list  → use ALL documents in the subject
+      - non-empty list      → use only those documents (multi-select)
+    """
     subject = _validate_teacher_owns_subject(db, subject_id, user)
 
     if num_questions > MAX_PROMPT_QUESTIONS:
         num_questions = MAX_PROMPT_QUESTIONS
 
-    chunks = _gather_chunks(db, subject_id=subject.id, document_id=document_id)
+    # Deduplicate + drop falsy entries so the frontend can send sloppy lists.
+    cleaned_doc_ids: list[uuid.UUID] | None = None
+    if document_ids:
+        cleaned_doc_ids = list({d for d in document_ids if d})
+        if not cleaned_doc_ids:
+            cleaned_doc_ids = None  # all docs
+
+    chunks = _gather_chunks(db, subject_id=subject.id, document_ids=cleaned_doc_ids)
     if not chunks:
         raise HTTPException(
             status_code=400,
-            detail="No processed document chunks found for this subject. Upload and process a document first.",
+            detail="No processed document chunks found. Upload and process at least one document first.",
         )
 
     if not claude_client.is_available():
@@ -234,7 +258,10 @@ def generate_quiz(
         + f"Now generate the JSON quiz with exactly {num_questions} questions."
     )
 
-    raw = claude_client.generate_completion(
+    # Cached: same subject + same chunks + same difficulty → same quiz.
+    # Teachers regenerating "for variety" can bump temperature or rephrase
+    # the topic hint to force a cache miss.
+    raw = claude_client.generate_completion_cached(
         system=QUIZ_GENERATION_SYSTEM,
         user_message=user_prompt,
         max_tokens=2200,
@@ -250,9 +277,15 @@ def generate_quiz(
     # Trim to the requested count if Claude over-generated
     generated = generated[:num_questions]
 
+    # Tag the quiz with the FIRST document if exactly one was selected — keeps
+    # back-compat with downstream code that uses Quiz.document_id (e.g. weak-area
+    # detection by document). When multiple docs are selected, leave NULL.
+    persisted_doc_id = (
+        cleaned_doc_ids[0] if cleaned_doc_ids and len(cleaned_doc_ids) == 1 else None
+    )
     quiz = Quiz(
         subject_id=subject.id,
-        document_id=document_id,
+        document_id=persisted_doc_id,
         created_by_id=user.id,
         title=title,
         description=f"AI-generated quiz from {subject.code}",

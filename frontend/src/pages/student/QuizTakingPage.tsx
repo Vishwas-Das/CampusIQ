@@ -7,12 +7,13 @@ import {
   ArrowRight,
   CheckCircle2,
   Clock,
+  Flag,
   Loader2,
   Send,
+  X as XIcon,
 } from 'lucide-react'
 import Card from '../../components/ui/Card'
 import Button from '../../components/ui/Button'
-import Badge from '../../components/ui/Badge'
 import ProgressBar from '../../components/ui/ProgressBar'
 import { ApiError, quizzesApi } from '../../api/client'
 import type { QuizForStudent } from '../../types'
@@ -22,10 +23,17 @@ const fadeUp: Variants = {
   animate: { opacity: 1, y: 0, transition: { duration: 0.3 } },
 }
 
-function formatSeconds(s: number): string {
-  const mins = Math.floor(s / 60)
-  const sec = s % 60
-  return `${mins}:${sec.toString().padStart(2, '0')}`
+/** mm:ss when under an hour, h:mm:ss when an hour or more. Used both for
+ *  elapsed time and the countdown — same shape, same code path. */
+function formatHMS(totalSeconds: number): string {
+  const total = Math.max(0, Math.floor(totalSeconds))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  if (h > 0) {
+    return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+  }
+  return `${m}:${s.toString().padStart(2, '0')}`
 }
 
 export default function QuizTakingPage() {
@@ -39,6 +47,22 @@ export default function QuizTakingPage() {
   const [submitting, setSubmitting] = useState(false)
   const [elapsed, setElapsed] = useState(0)
   const startedAtRef = useRef<number | null>(null)
+  // Once auto-submit has fired we MUST NOT fire it again (timer keeps ticking
+  // while the network call is in flight). Ref is fine — no re-render needed.
+  const autoSubmittedRef = useRef(false)
+
+  // ── Flag-question state ──
+  // flaggedIds = which question IDs the student has flagged (for icon color).
+  // flagReasonsById = the saved reason text, so re-opening the popover
+  //   shows what they typed before (lets them edit it).
+  // flagPopoverFor = the question ID whose popover is currently open
+  //   (null = closed). Only one popover at a time.
+  const [flaggedIds, setFlaggedIds] = useState<Set<string>>(new Set())
+  const [flagReasonsById, setFlagReasonsById] = useState<Record<string, string | null>>({})
+  const [flagPopoverFor, setFlagPopoverFor] = useState<string | null>(null)
+  const [flagPopoverReason, setFlagPopoverReason] = useState('')
+  const [flagBusy, setFlagBusy] = useState(false)
+  const [flagError, setFlagError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!quizId) return
@@ -47,10 +71,29 @@ export default function QuizTakingPage() {
       setLoading(true)
       try {
         const data = await quizzesApi.getAsStudent(quizId)
-        if (!cancelled) {
-          setQuiz(data)
-          startedAtRef.current = Date.now()
+        if (cancelled) return
+        // Block entry if the backend says the student has already submitted —
+        // we shouldn't even render the taking screen. Send them to History.
+        if (data.has_attempted) {
+          navigate('/student/quizzes', { replace: true })
+          return
         }
+        // Block entry if the window is closed — friendly error + go back.
+        const nowMs = Date.now()
+        if (data.opens_at && nowMs < new Date(data.opens_at).getTime()) {
+          setError(
+            `This quiz opens at ${new Date(data.opens_at).toLocaleString()}`,
+          )
+          return
+        }
+        if (data.closes_at && nowMs > new Date(data.closes_at).getTime()) {
+          setError(
+            `This quiz closed at ${new Date(data.closes_at).toLocaleString()}`,
+          )
+          return
+        }
+        setQuiz(data)
+        startedAtRef.current = Date.now()
       } catch (err) {
         if (!cancelled) {
           setError(
@@ -66,7 +109,7 @@ export default function QuizTakingPage() {
     return () => {
       cancelled = true
     }
-  }, [quizId])
+  }, [quizId, navigate])
 
   useEffect(() => {
     if (!startedAtRef.current) return
@@ -91,6 +134,92 @@ export default function QuizTakingPage() {
     setAnswers((prev) => ({ ...prev, [currentQuestion.id]: option }))
   }
 
+  // ── Flag helpers ──
+  // Load existing flags once the quiz is in hand so icons render correctly
+  // (e.g. on page refresh mid-quiz, we don't lose what was already flagged).
+  useEffect(() => {
+    if (!quizId || !quiz) return
+    void (async () => {
+      try {
+        const flags = await quizzesApi.myFlagsForQuiz(quizId)
+        const ids = new Set(flags.map((f) => f.question_id))
+        const reasons: Record<string, string | null> = {}
+        for (const f of flags) reasons[f.question_id] = f.reason
+        setFlaggedIds(ids)
+        setFlagReasonsById(reasons)
+      } catch {
+        // Silent — flagging is best-effort; missing reload shouldn't block the quiz
+      }
+    })()
+  }, [quizId, quiz])
+
+  const openFlagPopover = (qid: string) => {
+    setFlagPopoverFor(qid)
+    setFlagPopoverReason(flagReasonsById[qid] ?? '')
+    setFlagError(null)
+  }
+
+  const closeFlagPopover = () => {
+    setFlagPopoverFor(null)
+    setFlagPopoverReason('')
+    setFlagError(null)
+  }
+
+  const saveFlag = async () => {
+    if (!quizId || !flagPopoverFor) return
+    setFlagBusy(true)
+    setFlagError(null)
+    const reason = flagPopoverReason.trim() || null
+    const qid = flagPopoverFor
+    try {
+      await quizzesApi.flagQuestion(quizId, qid, reason)
+      setFlaggedIds((prev) => {
+        const next = new Set(prev)
+        next.add(qid)
+        return next
+      })
+      setFlagReasonsById((prev) => ({ ...prev, [qid]: reason }))
+      closeFlagPopover()
+    } catch (err) {
+      setFlagError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not save the flag',
+      )
+    } finally {
+      setFlagBusy(false)
+    }
+  }
+
+  const removeFlag = async () => {
+    if (!quizId || !flagPopoverFor) return
+    setFlagBusy(true)
+    setFlagError(null)
+    const qid = flagPopoverFor
+    try {
+      await quizzesApi.unflagQuestion(quizId, qid)
+      setFlaggedIds((prev) => {
+        const next = new Set(prev)
+        next.delete(qid)
+        return next
+      })
+      setFlagReasonsById((prev) => {
+        const next = { ...prev }
+        delete next[qid]
+        return next
+      })
+      closeFlagPopover()
+    } catch (err) {
+      setFlagError(
+        err instanceof ApiError && typeof err.detail === 'string'
+          ? err.detail
+          : 'Could not remove the flag',
+      )
+    } finally {
+      setFlagBusy(false)
+    }
+  }
+
   const handleSubmit = async () => {
     if (!quiz) return
     setSubmitting(true)
@@ -111,6 +240,13 @@ export default function QuizTakingPage() {
       sessionStorage.setItem(`quiz-result-${result.id}`, JSON.stringify(result))
       navigate(`/student/quizzes/${quiz.id}/result/${result.id}`)
     } catch (err) {
+      // 409 = backend says this student already has an attempt for this quiz.
+      // Don't show a generic error — route them to History where they can
+      // see their existing attempt.
+      if (err instanceof ApiError && err.status === 409) {
+        navigate('/student/quizzes', { replace: true })
+        return
+      }
       setError(
         err instanceof ApiError && typeof err.detail === 'string'
           ? err.detail
@@ -119,6 +255,67 @@ export default function QuizTakingPage() {
       setSubmitting(false)
     }
   }
+
+  // ── Auto-submit when the student leaves the tab/app (Page Visibility API) ──
+  // ALWAYS submits on visibility change — no Pause exception. The browser
+  // fires "visibilitychange" whenever this page goes hidden (other tab,
+  // minimized window, phone locked, app backgrounded). All of those count
+  // as "left the quiz", so we submit whatever they had so far.
+  //
+  // We guard with autoSubmittedRef so the handler only fires once — without
+  // it, the event could trigger twice (e.g. tab switch + window blur).
+  useEffect(() => {
+    if (!quiz) return
+
+    const onVisibilityChange = () => {
+      if (document.hidden && !autoSubmittedRef.current && !submitting) {
+        autoSubmittedRef.current = true
+        void handleSubmit()
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [quiz, submitting])
+
+  // ── Live countdown: min(time_limit_seconds, closes_at - quizStart) - elapsed ──
+  // We compute the *cap* once when the quiz loads (won't change), then the
+  // remaining seconds is just cap - elapsed in every render.
+  const totalAllowedSeconds = useMemo(() => {
+    if (!quiz || !startedAtRef.current) return null
+    const limit = quiz.time_limit_seconds ??
+      (quiz.time_limit_minutes ? quiz.time_limit_minutes * 60 : null)
+    if (limit === null && !quiz.closes_at) return null
+
+    const fromCloseSec = quiz.closes_at
+      ? Math.max(0, Math.floor((new Date(quiz.closes_at).getTime() - startedAtRef.current) / 1000))
+      : Number.POSITIVE_INFINITY
+    const fromLimitSec = limit ?? Number.POSITIVE_INFINITY
+    const cap = Math.min(fromCloseSec, fromLimitSec)
+    return cap === Number.POSITIVE_INFINITY ? null : cap
+  }, [quiz])
+
+  const remainingSeconds =
+    totalAllowedSeconds === null ? null : Math.max(0, totalAllowedSeconds - elapsed)
+
+  // Auto-submit when the timer hits zero. Guard with a ref so the submit
+  // only fires once even though the timer keeps ticking past 0.
+  useEffect(() => {
+    if (
+      remainingSeconds !== null &&
+      remainingSeconds <= 0 &&
+      !autoSubmittedRef.current &&
+      !submitting &&
+      quiz
+    ) {
+      autoSubmittedRef.current = true
+      void handleSubmit()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [remainingSeconds, submitting, quiz])
 
   if (loading) {
     return (
@@ -165,11 +362,31 @@ export default function QuizTakingPage() {
             </p>
           </div>
           <div className="flex items-center gap-3 text-xs">
-            <span className="inline-flex items-center gap-1 text-[var(--text-tertiary)]">
-              <Clock className="h-3.5 w-3.5" />
-              {formatSeconds(elapsed)}
-            </span>
-            <Badge size="sm">{quiz.difficulty}</Badge>
+            {/* When there's a per-attempt cap we show the countdown (big +
+                colored when low). Otherwise we fall back to elapsed time. */}
+            {remainingSeconds !== null ? (
+              <span
+                className={`inline-flex items-center gap-1 font-mono tabular-nums text-sm ${
+                  remainingSeconds <= 60
+                    ? 'text-danger font-semibold'
+                    : remainingSeconds <= 300
+                      ? 'text-warning'
+                      : 'text-[var(--text-primary)]'
+                }`}
+                title="Time remaining"
+              >
+                <Clock className="h-3.5 w-3.5" />
+                {formatHMS(remainingSeconds)}
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[var(--text-tertiary)]">
+                <Clock className="h-3.5 w-3.5" />
+                {formatHMS(elapsed)}
+              </span>
+            )}
+            {/* Difficulty badge intentionally NOT shown during the take —
+                seeing "HARD" before answering primes worse performance.
+                The result page reveals it post-submission. */}
           </div>
         </div>
         <ProgressBar value={progress} max={100} size="sm" color="primary" />
@@ -196,16 +413,86 @@ export default function QuizTakingPage() {
             <p className="text-base font-medium text-[var(--text-primary)] leading-relaxed">
               {currentQuestion.question_text}
             </p>
-            <Badge size="sm" variant={
-              currentQuestion.difficulty === 'easy'
-                ? 'success'
-                : currentQuestion.difficulty === 'hard'
-                  ? 'danger'
-                  : 'warning'
-            }>
-              {currentQuestion.difficulty}
-            </Badge>
+            {/* Flag button (replaces the difficulty badge — difficulty is
+                intentionally hidden during the quiz to avoid priming).
+                Outline icon = not flagged, filled = flagged. */}
+            <button
+              type="button"
+              onClick={() => openFlagPopover(currentQuestion.id)}
+              disabled={submitting}
+              className={`shrink-0 inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs border transition-colors ${
+                flaggedIds.has(currentQuestion.id)
+                  ? 'border-warning/40 bg-warning/10 text-warning'
+                  : 'border-[var(--border-default)] text-[var(--text-tertiary)] hover:bg-[var(--bg-tertiary)]'
+              }`}
+              title={
+                flaggedIds.has(currentQuestion.id)
+                  ? 'You flagged this question — click to edit or remove'
+                  : 'Flag this question if it seems broken or ambiguous'
+              }
+            >
+              <Flag
+                className="h-3.5 w-3.5"
+                fill={flaggedIds.has(currentQuestion.id) ? 'currentColor' : 'none'}
+              />
+              {flaggedIds.has(currentQuestion.id) ? 'Flagged' : 'Flag'}
+            </button>
           </div>
+
+          {/* Flag popover — inline below the question. We use inline (not
+              positioned absolute) so it can't get clipped or hidden behind
+              other cards on tiny screens. */}
+          {flagPopoverFor === currentQuestion.id && (
+            <div className="rounded-lg border border-warning/30 bg-warning/5 p-3 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-semibold text-warning uppercase tracking-wider">
+                  Why are you flagging this?
+                </span>
+                <button
+                  type="button"
+                  onClick={closeFlagPopover}
+                  disabled={flagBusy}
+                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                >
+                  <XIcon className="h-4 w-4" />
+                </button>
+              </div>
+              <textarea
+                value={flagPopoverReason}
+                onChange={(e) => setFlagPopoverReason(e.target.value)}
+                maxLength={1000}
+                rows={2}
+                placeholder='Optional — e.g. "Two options look correct" or "Typo in question"'
+                className="w-full px-2 py-1.5 text-sm rounded-md bg-[var(--bg-secondary)] border border-[var(--border-default)] text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-warning resize-none"
+                disabled={flagBusy}
+              />
+              {flagError && (
+                <p className="text-xs text-danger">{flagError}</p>
+              )}
+              <div className="flex items-center justify-between gap-2">
+                {flaggedIds.has(currentQuestion.id) ? (
+                  <Button
+                    variant="danger"
+                    size="sm"
+                    onClick={() => void removeFlag()}
+                    disabled={flagBusy}
+                  >
+                    Remove flag
+                  </Button>
+                ) : (
+                  <span />
+                )}
+                <Button
+                  variant="primary"
+                  size="sm"
+                  onClick={() => void saveFlag()}
+                  disabled={flagBusy}
+                >
+                  {flagBusy ? 'Saving…' : 'Save flag'}
+                </Button>
+              </div>
+            </div>
+          )}
 
           <ul className="space-y-2">
             {currentQuestion.options?.map((opt) => {

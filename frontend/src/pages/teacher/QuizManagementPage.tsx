@@ -70,7 +70,10 @@ export default function QuizManagementPage() {
   const [subjects, setSubjects] = useState<Subject[]>([])
   const [documents, setDocuments] = useState<DocumentWithSubject[]>([])
   const [genSubjectId, setGenSubjectId] = useState('')
-  const [genDocumentId, setGenDocumentId] = useState('')
+  // Multi-select: a Set of document IDs the teacher wants to draw chunks from.
+  // Empty Set = use ALL docs in the subject (backend default). Lets the teacher
+  // pick any subset — e.g. 3 out of 8 unit PDFs — instead of "one or everything".
+  const [genDocumentIds, setGenDocumentIds] = useState<Set<string>>(new Set())
   const [genDifficulty, setGenDifficulty] = useState<Difficulty>('medium')
   const [genNumQuestions, setGenNumQuestions] = useState(5)
   const [genTopic, setGenTopic] = useState('')
@@ -86,6 +89,14 @@ export default function QuizManagementPage() {
   // Review modal
   const [reviewQuiz, setReviewQuiz] = useState<QuizForTeacher | null>(null)
   const [reviewLoading, setReviewLoading] = useState(false)
+
+  // Publish-with-timing modal — opens when the teacher publishes a quiz.
+  // We store durations as TOTAL SECONDS for math, then split into h/m/s
+  // inputs for display. Defaults: 24h window, 10min per attempt.
+  const [publishingQuiz, setPublishingQuiz] = useState<QuizSummary | null>(null)
+  const [publishWindowSeconds, setPublishWindowSeconds] = useState<number>(24 * 3600)
+  const [publishAttemptSeconds, setPublishAttemptSeconds] = useState<number>(10 * 60)
+  const [publishSaving, setPublishSaving] = useState(false)
 
   const refresh = async () => {
     setLoading(true)
@@ -113,16 +124,6 @@ export default function QuizManagementPage() {
   const subjectOptions = useMemo(
     () => subjects.map((s) => ({ value: s.id, label: `${s.code} — ${s.name}` })),
     [subjects],
-  )
-  const documentOptions = useMemo(
-    () => [
-      { value: '', label: 'All documents in subject' },
-      ...documents
-        .filter((d) => !genSubjectId || d.subject_id === genSubjectId)
-        .filter((d) => d.processing_status === 'ready')
-        .map((d) => ({ value: d.id, label: d.title })),
-    ],
-    [documents, genSubjectId],
   )
 
   const pending = quizzes.filter((q) => !q.is_published && q.is_ai_generated)
@@ -153,9 +154,11 @@ export default function QuizManagementPage() {
       topic: genTopic.trim() || null,
     }
 
+    // Multi-doc: send the Set as an array. Empty array → backend uses all
+    // docs in the subject (which is the same as null).
     const payload = {
       subject_id: genSubjectId,
-      document_id: genDocumentId || null,
+      document_ids: genDocumentIds.size > 0 ? Array.from(genDocumentIds) : null,
       difficulty: genDifficulty,
       num_questions: genNumQuestions,
       topic_hint: job.topic,
@@ -215,19 +218,76 @@ export default function QuizManagementPage() {
   }
 
   const handlePublishToggle = async (id: string, current: boolean) => {
+    // Unpublishing is direct — no timing needed.
+    if (current) {
+      try {
+        await quizzesApi.publish(id, false)
+        await refresh()
+        if (reviewQuiz?.id === id) {
+          const refreshed = await quizzesApi.getAsTeacher(id)
+          setReviewQuiz(refreshed)
+        }
+      } catch (err) {
+        setError(
+          err instanceof ApiError && typeof err.detail === 'string'
+            ? err.detail
+            : 'Unpublish failed',
+        )
+      }
+      return
+    }
+
+    // Publishing → open the timing modal. The actual PATCH happens in
+    // confirmPublish() once the teacher fills in the window + per-attempt time.
+    const quiz = quizzes.find((q) => q.id === id) ?? null
+    if (!quiz) return
+    setPublishingQuiz(quiz)
+    // Seed the inputs from the quiz's existing values when available.
+    if (quiz.time_limit_seconds) {
+      setPublishAttemptSeconds(quiz.time_limit_seconds)
+    } else if (quiz.time_limit_minutes) {
+      setPublishAttemptSeconds(quiz.time_limit_minutes * 60)
+    }
+  }
+
+  const confirmPublish = async () => {
+    if (!publishingQuiz) return
+    if (publishWindowSeconds <= 0) {
+      setError('Window duration must be more than 0 seconds')
+      return
+    }
+    if (publishAttemptSeconds <= 0) {
+      setError('Per-attempt time must be more than 0 seconds')
+      return
+    }
+    setPublishSaving(true)
+    setError(null)
     try {
-      await quizzesApi.publish(id, !current)
+      // Compute the open / close window. opens_at = NOW, closes_at = now +
+      // window. toISOString() always emits UTC ("Z" suffix) so the backend
+      // receives unambiguous timestamps regardless of the user's timezone.
+      const now = new Date()
+      const closes = new Date(now.getTime() + publishWindowSeconds * 1000)
+      await quizzesApi.update(publishingQuiz.id, {
+        is_published: true,
+        opens_at: now.toISOString(),
+        closes_at: closes.toISOString(),
+        time_limit_seconds: publishAttemptSeconds,
+      })
       await refresh()
-      if (reviewQuiz?.id === id) {
-        const refreshed = await quizzesApi.getAsTeacher(id)
+      if (reviewQuiz?.id === publishingQuiz.id) {
+        const refreshed = await quizzesApi.getAsTeacher(publishingQuiz.id)
         setReviewQuiz(refreshed)
       }
+      setPublishingQuiz(null)
     } catch (err) {
       setError(
         err instanceof ApiError && typeof err.detail === 'string'
           ? err.detail
           : 'Publish failed',
       )
+    } finally {
+      setPublishSaving(false)
     }
   }
 
@@ -427,15 +487,93 @@ export default function QuizManagementPage() {
             value={genSubjectId}
             onChange={(e) => {
               setGenSubjectId(e.target.value)
-              setGenDocumentId('')
+              // Clear chosen docs when switching subject — old IDs would
+              // belong to a different subject's docs.
+              setGenDocumentIds(new Set())
             }}
           />
-          <Select
-            label="Document (optional — defaults to all subject docs)"
-            options={documentOptions}
-            value={genDocumentId}
-            onChange={(e) => setGenDocumentId(e.target.value)}
-          />
+
+          {/* Multi-select docs. Default state (empty) = all subject docs.
+              Teachers can tick any subset — e.g. "Unit 1 + Unit 3 only". */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider">
+                Documents to draw from
+              </label>
+              <div className="flex items-center gap-2 text-[11px]">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const ready = documents
+                      .filter((d) => !genSubjectId || d.subject_id === genSubjectId)
+                      .filter((d) => d.processing_status === 'ready')
+                      .map((d) => d.id)
+                    setGenDocumentIds(new Set(ready))
+                  }}
+                  disabled={!genSubjectId}
+                  className="text-[var(--text-tertiary)] hover:text-primary disabled:opacity-40"
+                >
+                  Select all
+                </button>
+                <span className="text-[var(--text-tertiary)]">·</span>
+                <button
+                  type="button"
+                  onClick={() => setGenDocumentIds(new Set())}
+                  className="text-[var(--text-tertiary)] hover:text-[var(--text-primary)]"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+
+            <div className="max-h-44 overflow-y-auto rounded-lg border border-[var(--border-default)] divide-y divide-[var(--border-default)] bg-[var(--bg-tertiary)]/40">
+              {(() => {
+                const subjectDocs = documents
+                  .filter((d) => !genSubjectId || d.subject_id === genSubjectId)
+                  .filter((d) => d.processing_status === 'ready')
+                if (subjectDocs.length === 0) {
+                  return (
+                    <p className="px-3 py-2 text-xs text-[var(--text-tertiary)]">
+                      {genSubjectId
+                        ? 'No ready documents in this subject yet.'
+                        : 'Pick a subject first.'}
+                    </p>
+                  )
+                }
+                return subjectDocs.map((d) => {
+                  const checked = genDocumentIds.has(d.id)
+                  return (
+                    <label
+                      key={d.id}
+                      className="flex items-center gap-2 px-3 py-2 text-sm cursor-pointer hover:bg-[var(--bg-tertiary)]"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={(e) => {
+                          setGenDocumentIds((prev) => {
+                            const next = new Set(prev)
+                            if (e.target.checked) next.add(d.id)
+                            else next.delete(d.id)
+                            return next
+                          })
+                        }}
+                        className="h-3.5 w-3.5"
+                      />
+                      <span className="text-[var(--text-primary)] truncate flex-1">
+                        {d.chapter || d.title || d.file_name}
+                      </span>
+                    </label>
+                  )
+                })
+              })()}
+            </div>
+            <p className="text-[11px] text-[var(--text-tertiary)]">
+              {genDocumentIds.size === 0
+                ? 'None ticked → quiz will use ALL ready documents in this subject.'
+                : `${genDocumentIds.size} document${genDocumentIds.size === 1 ? '' : 's'} selected.`}
+            </p>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Select
               label="Difficulty"
@@ -545,6 +683,166 @@ export default function QuizManagementPage() {
           </div>
         )}
       </Modal>
+
+      {/* Publish-quiz modal: window duration + per-attempt time limit.
+          Both are h/m/s so a teacher can set anything from "30 second
+          pop quiz, open for 5 min" up to "2 hour mock test, open all
+          weekend". toISOString() on submit emits UTC for the backend. */}
+      <Modal
+        isOpen={publishingQuiz !== null}
+        onClose={() => !publishSaving && setPublishingQuiz(null)}
+        title="Publish quiz"
+        size="md"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => setPublishingQuiz(null)}
+              disabled={publishSaving}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              onClick={() => void confirmPublish()}
+              disabled={
+                publishSaving ||
+                publishWindowSeconds <= 0 ||
+                publishAttemptSeconds <= 0
+              }
+            >
+              {publishSaving ? 'Publishing…' : 'Publish'}
+            </Button>
+          </div>
+        }
+      >
+        {publishingQuiz && (
+          <div className="space-y-5">
+            <p className="text-sm text-[var(--text-secondary)]">
+              <span className="text-[var(--text-primary)] font-medium">
+                {publishingQuiz.title}
+              </span>
+            </p>
+
+            <div>
+              <label className="block text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+                1. Quiz open for the class
+              </label>
+              <DurationPicker
+                seconds={publishWindowSeconds}
+                onChange={setPublishWindowSeconds}
+              />
+              <p className="text-[11px] text-[var(--text-tertiary)] mt-1.5">
+                The window during which students can click Start. Begins NOW
+                and closes automatically after this duration.
+                <br />
+                <span className="text-[var(--text-secondary)]">
+                  Example: 1 hour → students may start anytime in that hour.
+                </span>
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+                2. Time each student gets once they start
+              </label>
+              <DurationPicker
+                seconds={publishAttemptSeconds}
+                onChange={setPublishAttemptSeconds}
+              />
+              <p className="text-[11px] text-[var(--text-tertiary)] mt-1.5">
+                Countdown each student sees on screen. Auto-submits at zero.
+                If the class window closes first, the timer caps at whatever
+                time is left.
+                <br />
+                <span className="text-[var(--text-secondary)]">
+                  Example: 10 min → every student has 10 minutes from when
+                  they click Start.
+                </span>
+              </p>
+              {publishAttemptSeconds <= 0 && (
+                <p className="text-[11px] text-warning mt-1.5">
+                  Set at least a few seconds — leaving this at 0 would give
+                  students unlimited time.
+                </p>
+              )}
+            </div>
+
+            <div className="text-xs text-[var(--text-tertiary)] border-t border-[var(--border-default)] pt-3">
+              Each student gets ONE attempt. After submit they can review
+              answers but not retake.
+            </div>
+          </div>
+        )}
+      </Modal>
     </motion.div>
+  )
+}
+
+/** Three small number inputs for hours / minutes / seconds. Stores total
+ *  seconds in the parent; only the display is decomposed. Caps minutes and
+ *  seconds at 59 each so the carry-over math stays predictable. */
+function DurationPicker({
+  seconds,
+  onChange,
+}: {
+  seconds: number
+  onChange: (totalSeconds: number) => void
+}) {
+  const h = Math.floor(seconds / 3600)
+  const m = Math.floor((seconds % 3600) / 60)
+  const s = seconds % 60
+
+  const update = (nh: number, nm: number, ns: number) => {
+    onChange(Math.max(0, nh * 3600 + nm * 60 + ns))
+  }
+
+  const cellClass =
+    'w-16 px-2 py-1.5 rounded-md bg-[var(--bg-tertiary)] border border-[var(--border-default)] text-sm text-center text-[var(--text-primary)] focus:outline-none focus:border-primary tabular-nums'
+
+  return (
+    <div className="flex items-end gap-2">
+      <div className="flex flex-col gap-1">
+        <input
+          type="number"
+          min={0}
+          max={99}
+          value={h}
+          onChange={(e) => update(Number(e.target.value) || 0, m, s)}
+          className={cellClass}
+        />
+        <span className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider text-center">
+          hr
+        </span>
+      </div>
+      <div className="flex flex-col gap-1">
+        <input
+          type="number"
+          min={0}
+          max={59}
+          value={m}
+          onChange={(e) => update(h, Math.min(59, Number(e.target.value) || 0), s)}
+          className={cellClass}
+        />
+        <span className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider text-center">
+          min
+        </span>
+      </div>
+      <div className="flex flex-col gap-1">
+        <input
+          type="number"
+          min={0}
+          max={59}
+          value={s}
+          onChange={(e) => update(h, m, Math.min(59, Number(e.target.value) || 0))}
+          className={cellClass}
+        />
+        <span className="text-[10px] text-[var(--text-tertiary)] uppercase tracking-wider text-center">
+          sec
+        </span>
+      </div>
+    </div>
   )
 }

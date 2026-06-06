@@ -4,6 +4,7 @@ import {
   Upload, FileText, Trash2, Download, AlertCircle, Loader2, FolderOpen,
 } from 'lucide-react'
 import { Badge, Button, Card, CardHeader, CardTitle, Select } from '../../components/ui'
+import Modal from '../../components/ui/Modal'
 import { documentsApi, subjectsApi, ApiError } from '../../api/client'
 import type { DocumentProcessingStatus, DocumentWithSubject, Subject } from '../../types'
 
@@ -30,7 +31,7 @@ const statusLabel: Record<DocumentProcessingStatus, string> = {
   pending: 'Pending',
 }
 
-const ACCEPTED_EXTENSIONS = '.pdf,.doc,.docx,.ppt,.pptx,.txt,.md'
+const ACCEPTED_EXTENSIONS = '.pdf,.docx,.pptx,.xlsx,.html,.htm,.rtf,.txt,.md'
 
 function formatBytes(bytes: number | null): string {
   if (bytes === null || bytes === 0) return '—'
@@ -61,6 +62,14 @@ export default function DocumentsPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const [deletingId, setDeletingId] = useState<string | null>(null)
+
+  // Upload-metadata modal — opens after the file picker so the teacher can
+  // tag the file(s) with a subject, chapter, and announcement before they go
+  // through the processing pipeline.
+  const [pendingFiles, setPendingFiles] = useState<File[] | null>(null)
+  const [pendingSubjectId, setPendingSubjectId] = useState<string>('')
+  const [pendingChapter, setPendingChapter] = useState('')
+  const [pendingAnnouncement, setPendingAnnouncement] = useState('')
 
   const loadAll = async () => {
     setLoading(true)
@@ -107,32 +116,62 @@ export default function DocumentsPage() {
     return () => clearInterval(interval)
   }, [documents])
 
-  const handleFileChange = async (e: ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
 
     setUploadError(null)
 
-    // If no subject selected, require at least one subject to exist
     if (subjects.length === 0) {
       setUploadError('Create a subject first before uploading documents')
       e.target.value = ''
       return
     }
 
-    // Use the filter as the target subject if it's a real subject; otherwise use the first
-    const targetSubjectId =
+    // Default to the currently-filtered subject if one is selected, otherwise
+    // fall back to the first subject — teacher can change it in the modal.
+    const defaultSubjectId =
       filter !== 'all' && subjects.some((s) => s.id === filter)
         ? filter
         : subjects[0]!.id
 
+    setPendingFiles(Array.from(files))
+    setPendingSubjectId(defaultSubjectId)
+    setPendingChapter('')
+    setPendingAnnouncement('')
+    if (fileInputRef.current) fileInputRef.current.value = ''
+  }
+
+  const cancelPendingUpload = () => {
+    setPendingFiles(null)
+    setPendingSubjectId('')
+    setPendingChapter('')
+    setPendingAnnouncement('')
+  }
+
+  const confirmUpload = async () => {
+    if (!pendingFiles || pendingFiles.length === 0) return
+    if (!pendingSubjectId) {
+      setUploadError('Pick a subject before uploading')
+      return
+    }
+
+    const targetSubjectId = pendingSubjectId
+    const chapter = pendingChapter.trim()
+    const description = pendingAnnouncement.trim()
+    const files = pendingFiles
+
+    // Close the modal and surface a single uploading state at the top.
+    setPendingFiles(null)
     setUploading(true)
     try {
-      for (const file of Array.from(files)) {
+      for (const file of files) {
         await documentsApi.upload({
           file,
           subjectId: targetSubjectId,
           title: file.name,
+          chapter: chapter || undefined,
+          description: description || undefined,
         })
       }
       await loadAll()
@@ -144,7 +183,9 @@ export default function DocumentsPage() {
       }
     } finally {
       setUploading(false)
-      if (fileInputRef.current) fileInputRef.current.value = ''
+      setPendingSubjectId('')
+      setPendingChapter('')
+      setPendingAnnouncement('')
     }
   }
 
@@ -392,6 +433,121 @@ export default function DocumentsPage() {
           </Card>
         </motion.div>
       )}
+
+      {/* Upload metadata modal — appears after the teacher picks a file(s),
+          before the actual upload. Chapter (becomes default download filename)
+          + a short announcement message that surfaces to students. */}
+      <Modal
+        isOpen={pendingFiles !== null}
+        onClose={cancelPendingUpload}
+        title={
+          pendingFiles && pendingFiles.length > 1
+            ? `Upload ${pendingFiles.length} files`
+            : 'Upload note'
+        }
+        size="md"
+        footer={
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="secondary" size="sm" onClick={cancelPendingUpload}>
+              Cancel
+            </Button>
+            <Button
+              variant="primary"
+              size="sm"
+              icon={Upload}
+              onClick={() => void confirmUpload()}
+              disabled={!pendingFiles || pendingFiles.length === 0}
+            >
+              Upload
+            </Button>
+          </div>
+        }
+      >
+        {pendingFiles && (
+          <div className="space-y-4">
+            {/* Show the files being uploaded so the teacher knows what they
+                picked. Same metadata applies to the whole batch. */}
+            <div>
+              <p className="text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+                Files
+              </p>
+              <ul className="space-y-1">
+                {pendingFiles.map((f, i) => (
+                  <li
+                    key={i}
+                    className="flex items-center gap-2 text-sm text-[var(--text-secondary)]"
+                  >
+                    <FileText className="h-3.5 w-3.5 text-[var(--text-tertiary)] shrink-0" />
+                    <span className="truncate" title={f.name}>
+                      {f.name}
+                    </span>
+                    <span className="text-xs text-[var(--text-tertiary)] tabular-nums shrink-0">
+                      {formatBytes(f.size)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+                Subject
+              </label>
+              <Select
+                options={subjects.map((s) => ({
+                  value: s.id,
+                  label: `${s.code} — ${s.name}`,
+                }))}
+                value={pendingSubjectId}
+                onChange={(e: ChangeEvent<HTMLSelectElement>) =>
+                  setPendingSubjectId(e.target.value)
+                }
+                placeholder="Pick a subject"
+              />
+              <p className="text-[11px] text-[var(--text-tertiary)] mt-1.5">
+                Determines which class sees this in their notes feed +
+                announcements. Required.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+                Chapter
+              </label>
+              <input
+                type="text"
+                value={pendingChapter}
+                onChange={(e) => setPendingChapter(e.target.value)}
+                placeholder='e.g. "Unit 2 - Network Layer"'
+                maxLength={255}
+                className="w-full px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-default)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-primary"
+              />
+              <p className="text-[11px] text-[var(--text-tertiary)] mt-1.5">
+                Also used as the default filename when students download
+                (e.g. "Unit 2 - Network Layer.pptx"). Leave empty to keep
+                the original upload name.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-[var(--text-tertiary)] uppercase tracking-wider mb-2">
+                Announcement to students
+              </label>
+              <input
+                type="text"
+                value={pendingAnnouncement}
+                onChange={(e) => setPendingAnnouncement(e.target.value)}
+                placeholder='e.g. "Here is the notes for chapter 1"'
+                maxLength={500}
+                className="w-full px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border-default)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-tertiary)] focus:outline-none focus:border-primary"
+              />
+              <p className="text-[11px] text-[var(--text-tertiary)] mt-1.5">
+                A short message shown above the AI-generated summary. Optional.
+              </p>
+            </div>
+          </div>
+        )}
+      </Modal>
     </motion.div>
   )
 }

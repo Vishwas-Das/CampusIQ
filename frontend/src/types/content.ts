@@ -74,6 +74,12 @@ export interface Document {
   content_type: string | null
   file_size_bytes: number | null
   summary: string | null
+  /** Teacher-supplied chapter / unit label (e.g. "Unit 2 - Network Layer").
+   *  When set, this also becomes the default download filename. */
+  chapter: string | null
+  /** Short teacher announcement ("Here is the notes for chapter 1"). Renders
+   *  above the AI summary in the student's note preview. */
+  description: string | null
   processing_status: DocumentProcessingStatus
   created_at: string
   compression_stats: CompressionStats | null

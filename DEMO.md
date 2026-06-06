@@ -10,8 +10,8 @@ checklist so nothing surprises you on stage.
 
 ## Pre-flight checklist (run 30 minutes before)
 
-1. **Supabase project online** — open
-   https://supabase.com/dashboard/project/zngdzrdselzflvfriznc and confirm
+1. **Supabase project online** — open your project dashboard at
+   `https://supabase.com/dashboard/project/<your-project-ref>` and confirm
    "Active" status (the project pauses itself after 7 days of inactivity).
    If paused, hit "Restore project" and wait ~2 minutes.
 

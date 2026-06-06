@@ -60,6 +60,44 @@ function formatDate(iso: string): string {
   }
 }
 
+/** Render a remaining-time chip label like "2h 14m" or "47m 12s" or "8s". */
+function formatRemaining(ms: number): string {
+  const sec = Math.max(0, Math.floor(ms / 1000))
+  const h = Math.floor(sec / 3600)
+  const m = Math.floor((sec % 3600) / 60)
+  const s = sec % 60
+  if (h > 0) return `${h}h ${m}m`
+  if (m > 0) return `${m}m ${s}s`
+  return `${s}s`
+}
+
+type QuizState =
+  | { kind: 'upcoming'; msUntilOpen: number }
+  | { kind: 'live'; msUntilClose: number | null }
+  | { kind: 'closed' }
+  | { kind: 'submitted' }
+
+/** Derive the takeable state of a quiz given the wall-clock NOW.
+ *
+ * Priority: already attempted > before window > after window > open.
+ * The frontend trusts these values for display; the BACKEND still
+ * enforces the same checks on submit, so a tampered client can't bypass. */
+function deriveQuizState(quiz: QuizSummary, now: number): QuizState {
+  if (quiz.has_attempted) return { kind: 'submitted' }
+  const openTs = quiz.opens_at ? new Date(quiz.opens_at).getTime() : null
+  const closeTs = quiz.closes_at ? new Date(quiz.closes_at).getTime() : null
+  if (openTs !== null && now < openTs) {
+    return { kind: 'upcoming', msUntilOpen: openTs - now }
+  }
+  if (closeTs !== null && now > closeTs) {
+    return { kind: 'closed' }
+  }
+  return {
+    kind: 'live',
+    msUntilClose: closeTs !== null ? Math.max(0, closeTs - now) : null,
+  }
+}
+
 const tabs = ['Available', 'History', 'Weak Areas'] as const
 type Tab = typeof tabs[number]
 
@@ -72,6 +110,14 @@ export default function QuizListPage() {
   const [weakAreas, setWeakAreas] = useState<WeakAreaResponse[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Re-render every second so "Opens in 2h 14m" / "12m 47s left" stay live.
+  // Cheap — only the badge labels recompute; the quizzes array doesn't refetch.
+  const [now, setNow] = useState<number>(() => Date.now())
+  useEffect(() => {
+    const id = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(id)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -154,32 +200,40 @@ export default function QuizListPage() {
               initial="initial"
               animate="animate"
             >
-              {quizzes.map((quiz) => (
-                <motion.div key={quiz.id} variants={fadeUp}>
-                  <Card hover className="flex flex-col gap-3">
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <h3 className="font-semibold text-[var(--text-primary)]">
-                          {quiz.subject_code}
-                        </h3>
-                        <p className="text-xs text-[var(--text-tertiary)] mt-0.5">{quiz.title}</p>
-                      </div>
-                      <Badge variant={difficultyVariant[quiz.difficulty]} size="sm">
-                        {quiz.difficulty}
-                      </Badge>
-                    </div>
-                    <div className="flex items-center gap-3 text-xs text-[var(--text-tertiary)]">
-                      <span className="flex items-center gap-1">
-                        <HelpCircle className="h-3 w-3" />
-                        {quiz.question_count} questions
-                      </span>
-                      {quiz.time_limit_minutes && (
-                        <span className="flex items-center gap-1">
-                          <Clock className="h-3 w-3" />
-                          {quiz.time_limit_minutes} min
-                        </span>
-                      )}
-                    </div>
+              {quizzes.map((quiz) => {
+                const state = deriveQuizState(quiz, now)
+                const seconds = quiz.time_limit_seconds ?? (quiz.time_limit_minutes ?? 0) * 60
+
+                // Status chip rendered above the action button.
+                let statusChip: React.ReactNode = null
+                if (state.kind === 'upcoming') {
+                  statusChip = (
+                    <Badge variant="info" size="sm">
+                      Opens in {formatRemaining(state.msUntilOpen)}
+                    </Badge>
+                  )
+                } else if (state.kind === 'live') {
+                  statusChip = (
+                    <Badge variant="success" size="sm">
+                      Live{state.msUntilClose !== null
+                        ? ` · ${formatRemaining(state.msUntilClose)} left`
+                        : ''}
+                    </Badge>
+                  )
+                } else if (state.kind === 'closed') {
+                  statusChip = (
+                    <Badge variant="default" size="sm">Closed</Badge>
+                  )
+                } else if (state.kind === 'submitted') {
+                  statusChip = (
+                    <Badge variant="primary" size="sm">Submitted</Badge>
+                  )
+                }
+
+                // Action button changes label + behavior per state.
+                let action: React.ReactNode = null
+                if (state.kind === 'live') {
+                  action = (
                     <Button
                       size="sm"
                       icon={Play}
@@ -188,9 +242,72 @@ export default function QuizListPage() {
                     >
                       Start Quiz
                     </Button>
-                  </Card>
-                </motion.div>
-              ))}
+                  )
+                } else if (state.kind === 'submitted') {
+                  action = (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="w-full mt-auto"
+                      onClick={() => setActiveTab('History')}
+                    >
+                      View answers
+                    </Button>
+                  )
+                } else {
+                  // upcoming or closed → disabled button conveys the reason
+                  action = (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="w-full mt-auto opacity-60"
+                      disabled
+                    >
+                      {state.kind === 'upcoming' ? 'Not open yet' : 'Quiz closed'}
+                    </Button>
+                  )
+                }
+
+                return (
+                  <motion.div key={quiz.id} variants={fadeUp}>
+                    <Card hover className="flex flex-col gap-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-[var(--text-primary)] truncate">
+                            {quiz.subject_code}
+                          </h3>
+                          <p className="text-xs text-[var(--text-tertiary)] mt-0.5 truncate">
+                            {quiz.title}
+                          </p>
+                        </div>
+                        {/* Difficulty badge intentionally hidden BEFORE the
+                            student submits, to avoid priming ("HARD" tanks
+                            performance just from the label). Shown post-hoc
+                            in History + Result page. */}
+                        {quiz.has_attempted && (
+                          <Badge variant={difficultyVariant[quiz.difficulty]} size="sm">
+                            {quiz.difficulty}
+                          </Badge>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-[var(--text-tertiary)] flex-wrap">
+                        <span className="flex items-center gap-1">
+                          <HelpCircle className="h-3 w-3" />
+                          {quiz.question_count} questions
+                        </span>
+                        {seconds > 0 && (
+                          <span className="flex items-center gap-1">
+                            <Clock className="h-3 w-3" />
+                            {formatRemaining(seconds * 1000)}
+                          </span>
+                        )}
+                      </div>
+                      {statusChip && <div>{statusChip}</div>}
+                      {action}
+                    </Card>
+                  </motion.div>
+                )
+              })}
             </motion.div>
           )}
         </>
@@ -225,7 +342,13 @@ export default function QuizListPage() {
                     {history.map((row) => (
                       <tr
                         key={row.id}
-                        className="border-b border-[var(--border-default)] last:border-0 hover:bg-[var(--bg-tertiary)] transition-colors"
+                        onClick={() =>
+                          navigate(
+                            `/student/quizzes/${row.quiz_id}/result/${row.id}`,
+                          )
+                        }
+                        className="border-b border-[var(--border-default)] last:border-0 hover:bg-[var(--bg-tertiary)] transition-colors cursor-pointer"
+                        title="Open review — see your answers + the correct ones"
                       >
                         <td className="px-4 py-3 text-[var(--text-secondary)]">
                           {formatDate(row.completed_at)}

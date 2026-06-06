@@ -63,6 +63,8 @@ import type {
   LoginRequest,
   ProfileUpdateRequest,
   PublicProfileResponse,
+  QuestionFlag,
+  QuestionFlagCreate,
   QuizAttemptCreate,
   QuizAttemptResponse,
   QuizForStudent,
@@ -81,6 +83,7 @@ import type {
   StudentDetailResponse,
   StudyOptimizerHistoryRow,
   Subject,
+  TeacherAnalyticsResponse,
   TeacherDashboardResponse,
   SubjectCreate,
   SubjectUpdate,
@@ -254,6 +257,13 @@ export interface UploadDocumentOptions {
   file: File
   subjectId: string
   title?: string
+  /** Teacher-supplied chapter / unit label. Becomes the default filename when
+   *  students download the file (e.g. "Unit 2 - Network Layer.pptx"). */
+  chapter?: string
+  /** Short announcement message displayed to students above the AI summary
+   *  ("Here is the notes for chapter 1"). Not a full description — the AI
+   *  summary handles deep content. */
+  description?: string
 }
 
 // ── Chat (Note Assistant + others) ──
@@ -341,17 +351,42 @@ export const documentsApi = {
     return api.get<DocumentWithSubject[]>(`/documents/${query}`)
   },
   get: (id: string) => api.get<Document>(`/documents/${id}`),
-  upload: ({ file, subjectId, title }: UploadDocumentOptions) => {
+  upload: ({ file, subjectId, title, chapter, description }: UploadDocumentOptions) => {
     const formData = new FormData()
     formData.append('file', file)
     formData.append('subject_id', subjectId)
     if (title) formData.append('title', title)
+    if (chapter) formData.append('chapter', chapter)
+    if (description) formData.append('description', description)
     return api.post<Document>('/documents/upload', formData)
   },
   chunks: (id: string) => api.get<DocumentChunkPreview[]>(`/documents/${id}/chunks`),
   reprocess: (id: string) => api.post<Document>(`/documents/${id}/reprocess`),
   delete: (id: string) => api.delete<void>(`/documents/${id}`),
   downloadUrl: (id: string) => `${API_BASE_URL}/documents/${id}/download`,
+  /**
+   * Fetch the raw file with the user's Bearer token, returning a Blob.
+   *
+   * The plain downloadUrl can't be used as an <a href>: the browser won't
+   * send the Authorization header on a top-level navigation, so the
+   * download endpoint would return 401. This helper does the authenticated
+   * fetch ourselves so callers can build an object URL and trigger save.
+   */
+  downloadBlob: async (id: string): Promise<{ blob: Blob; fileName: string }> => {
+    const token = useAuthStore.getState().token
+    if (!token) throw new ApiError(401, 'Not authenticated', null)
+    const response = await fetch(`${API_BASE_URL}/documents/${id}/download`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+    if (!response.ok) {
+      throw new ApiError(response.status, await response.text(), null)
+    }
+    // Extract filename from Content-Disposition; FastAPI's FileResponse sets it.
+    const disposition = response.headers.get('content-disposition') ?? ''
+    const match = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)
+    const fileName = match ? decodeURIComponent(match[1]!) : `document-${id}`
+    return { blob: await response.blob(), fileName }
+  },
 }
 
 // ── College Documents (Phase 10, F5) ──
@@ -416,6 +451,24 @@ export const quizzesApi = {
     const query = subjectId ? `?subject_id=${encodeURIComponent(subjectId)}` : ''
     return api.get<AttemptHistoryRow[]>(`/quizzes/attempts/me${query}`)
   },
+  /** Fetch one past attempt with full review payload (questions, the student's
+   *  answer, the correct answer, explanation). Backed by GET /attempts/{id}. */
+  getAttempt: (attemptId: string) =>
+    api.get<QuizAttemptResponse>(`/quizzes/attempts/${attemptId}`),
+
+  // ── Question flags ──
+  /** Create OR update this student's flag on a question. Idempotent — calling
+   *  it twice with different reasons just updates the latest. */
+  flagQuestion: (quizId: string, questionId: string, reason: string | null) =>
+    api.post<QuestionFlag>(
+      `/quizzes/${quizId}/questions/${questionId}/flag`,
+      { reason } satisfies QuestionFlagCreate,
+    ),
+  unflagQuestion: (quizId: string, questionId: string) =>
+    api.delete<void>(`/quizzes/${quizId}/questions/${questionId}/flag`),
+  /** Used on page load to color the right icons (already-flagged = filled). */
+  myFlagsForQuiz: (quizId: string) =>
+    api.get<QuestionFlag[]>(`/quizzes/${quizId}/my-flags`),
   myWeakAreas: () => api.get<WeakAreaResponse[]>('/quizzes/attempts/me/weak-areas'),
 }
 
@@ -424,6 +477,16 @@ export const quizzesApi = {
 export const dashboardApi = {
   me: () => api.get<DashboardResponse>('/dashboard/me'),
   teacher: () => api.get<TeacherDashboardResponse>('/dashboard/teacher'),
+  /** Per-subject drill-down: weakest topics, most missed questions, score
+   *  distribution. Pass subjectId=null to aggregate across all subjects. */
+  teacherAnalytics: (subjectId: string | null) => {
+    const query = subjectId
+      ? `?subject_id=${encodeURIComponent(subjectId)}`
+      : ''
+    return api.get<TeacherAnalyticsResponse>(
+      `/dashboard/teacher/analytics${query}`,
+    )
+  },
   admin: () => api.get<AdminDashboardResponse>('/dashboard/admin'),
 }
 

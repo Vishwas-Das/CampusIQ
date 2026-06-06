@@ -14,7 +14,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
-from app.models.quiz import Difficulty, Question, QuestionType, Quiz, QuizAttempt
+from app.models.content import Announcement, AnnouncementTarget
+from app.models.quiz import Difficulty, Question, QuestionFlag, QuestionType, Quiz, QuizAttempt
 from app.models.user import Subject, User, UserRole
 from app.services import campus_iq_score, xp
 from app.schemas.quiz import (
@@ -105,7 +106,14 @@ def _to_quiz_response(
     question_count: int,
     attempt_count: int,
     avg_score: float | None,
+    has_attempted: bool | None = None,
 ) -> QuizResponse:
+    # Prefer the precise seconds value when set; fall back to minutes*60 for
+    # old rows that only carry the legacy column. The frontend only reads
+    # time_limit_seconds — minutes is kept for back-compat callers.
+    seconds = quiz.time_limit_seconds
+    if seconds is None and quiz.time_limit_minutes is not None:
+        seconds = quiz.time_limit_minutes * 60
     return QuizResponse(
         id=quiz.id,
         subject_id=quiz.subject_id,
@@ -115,6 +123,9 @@ def _to_quiz_response(
         description=quiz.description,
         difficulty=quiz.difficulty.value,
         time_limit_minutes=quiz.time_limit_minutes,
+        time_limit_seconds=seconds,
+        opens_at=quiz.opens_at,
+        closes_at=quiz.closes_at,
         is_published=quiz.is_published,
         is_ai_generated=quiz.is_ai_generated,
         created_at=quiz.created_at,
@@ -123,6 +134,7 @@ def _to_quiz_response(
         avg_score=avg_score,
         subject_code=subject.code if subject else None,
         subject_name=subject.name if subject else None,
+        has_attempted=has_attempted,
     )
 
 
@@ -189,6 +201,21 @@ def list_quizzes(
     quiz_ids = [q.id for q, _ in rows]
     stats = _quiz_aggregate_stats(db, quiz_ids)
 
+    # For students: bulk-fetch which of these quizzes they've already attempted
+    # in a single SELECT, then look up O(1) in the list comprehension below.
+    # Teachers/admins always get has_attempted=None (it's a student-only flag).
+    attempted_ids: set[uuid.UUID] = set()
+    if user.role == UserRole.STUDENT and quiz_ids:
+        attempted_ids = {
+            row[0]
+            for row in db.execute(
+                select(QuizAttempt.quiz_id)
+                .where(QuizAttempt.quiz_id.in_(quiz_ids))
+                .where(QuizAttempt.student_id == user.id)
+                .distinct()
+            ).all()
+        }
+
     return [
         _to_quiz_response(
             q,
@@ -196,6 +223,7 @@ def list_quizzes(
             question_count=stats.get(q.id, (0, 0, None))[0],
             attempt_count=stats.get(q.id, (0, 0, None))[1],
             avg_score=stats.get(q.id, (0, 0, None))[2],
+            has_attempted=(q.id in attempted_ids) if user.role == UserRole.STUDENT else None,
         )
         for q, s in rows
     ]
@@ -216,12 +244,24 @@ def get_quiz_for_student(db: Session, quiz_id: uuid.UUID, user: User) -> QuizFor
     subject = db.get(Subject, quiz.subject_id)
     stats = _quiz_aggregate_stats(db, [quiz.id])[quiz.id]
 
+    # Has this specific student already submitted? Drives the UI: if true,
+    # the "Take Quiz" button becomes "View Result" + the taking screen
+    # redirects to the result page.
+    has_attempted = False
+    if user.role == UserRole.STUDENT:
+        has_attempted = db.scalar(
+            select(func.count(QuizAttempt.id))
+            .where(QuizAttempt.quiz_id == quiz.id)
+            .where(QuizAttempt.student_id == user.id)
+        ) > 0
+
     base = _to_quiz_response(
         quiz,
         subject=subject,
         question_count=stats[0],
         attempt_count=stats[1],
         avg_score=stats[2],
+        has_attempted=has_attempted if user.role == UserRole.STUDENT else None,
     )
     return QuizForStudent(
         **base.model_dump(),
@@ -274,6 +314,11 @@ def update_quiz(
         raise HTTPException(status_code=404, detail="Quiz not found")
     _validate_quiz_owner(quiz, user)
 
+    # Capture the prior publish state so we can detect a False -> True
+    # transition AFTER applying the update — that's the "newly published"
+    # event we want to broadcast as a classroom announcement.
+    was_published = bool(quiz.is_published)
+
     if data.title is not None:
         quiz.title = data.title.strip()
     if data.description is not None:
@@ -282,6 +327,17 @@ def update_quiz(
         quiz.difficulty = Difficulty(data.difficulty)
     if data.time_limit_minutes is not None:
         quiz.time_limit_minutes = data.time_limit_minutes
+    # time_limit_seconds is the new source of truth; keep minutes in sync
+    # so legacy displays still work.
+    if data.time_limit_seconds is not None:
+        quiz.time_limit_seconds = data.time_limit_seconds
+        quiz.time_limit_minutes = max(1, data.time_limit_seconds // 60)
+    # opens_at / closes_at are nullable — PATCHing them explicitly lets a
+    # teacher clear a window by sending null.
+    if data.opens_at is not None:
+        quiz.opens_at = data.opens_at
+    if data.closes_at is not None:
+        quiz.closes_at = data.closes_at
     if data.is_published is not None:
         quiz.is_published = data.is_published
 
@@ -307,6 +363,32 @@ def update_quiz(
 
     db.commit()
     db.refresh(quiz)
+
+    # If the teacher just published this quiz (False -> True), broadcast a
+    # classroom announcement so the subject's students see it in their
+    # Dashboard ANNOUNCEMENTS card. Never block the update if announcement
+    # creation fails.
+    just_published = (not was_published) and bool(quiz.is_published)
+    if just_published:
+        try:
+            subject = db.get(Subject, quiz.subject_id)
+            announcement = Announcement(
+                author_id=user.id,
+                subject_id=quiz.subject_id,
+                college_id=user.college_id,
+                title=f"New quiz: {quiz.title}",
+                body=(
+                    f"A new quiz is live for {subject.code if subject else 'your subject'}."
+                    f" Difficulty: {quiz.difficulty.value}."
+                    f" Time limit: {quiz.time_limit_minutes or '—'} min."
+                ),
+                target=AnnouncementTarget.SUBJECT,
+            )
+            db.add(announcement)
+            db.commit()
+        except Exception:
+            logger.exception("Could not create publish-announcement for quiz %s", quiz.id)
+            db.rollback()
     return get_quiz_for_teacher(db, quiz.id, user)
 
 
@@ -388,6 +470,37 @@ def submit_attempt(
         raise HTTPException(status_code=404, detail="Quiz not found")
     if not quiz.is_published:
         raise HTTPException(status_code=400, detail="Quiz has not been published yet")
+
+    # ── Time window check ──
+    # opens_at / closes_at are stored UTC (timezone-aware). datetime.now(UTC)
+    # is the only safe comparison; mixing naive + aware datetimes raises.
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    if quiz.opens_at is not None and now < quiz.opens_at:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Quiz opens at {quiz.opens_at.isoformat()}",
+        )
+    if quiz.closes_at is not None and now > quiz.closes_at:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Quiz closed at {quiz.closes_at.isoformat()}",
+        )
+
+    # ── One-attempt rule ──
+    # Reject if this student has any prior attempt — only ONE attempt per
+    # student per quiz. 409 (Conflict) tells the frontend to navigate to the
+    # existing result page instead of showing a generic error.
+    existing = db.scalar(
+        select(QuizAttempt)
+        .where(QuizAttempt.quiz_id == quiz.id)
+        .where(QuizAttempt.student_id == user.id)
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="You've already attempted this quiz.",
+        )
 
     questions_by_id = {q.id: q for q in quiz.questions}
     if not questions_by_id:
@@ -525,6 +638,247 @@ def _is_answer_correct(question: Question, student_answer: str) -> bool:
         return student_answer.strip().lower() == correct.lower()
     # short answer: case-insensitive substring match
     return correct.lower() in student_answer.strip().lower()
+
+
+# ════════════════════════════════════════════════════════════════
+# Question flags (student-raised "this question is broken" reports)
+# ════════════════════════════════════════════════════════════════
+
+# How long after submitting a student can still flag a question.
+# Set to 3 days so they can review before exams but can't grade-fight forever.
+FLAG_AFTER_SUBMIT_DAYS = 3
+
+
+def _ensure_flag_allowed(
+    db: Session,
+    quiz: Quiz,
+    student: User,
+) -> None:
+    """Allow during quiz (no attempt yet) OR within FLAG_AFTER_SUBMIT_DAYS of submit.
+
+    Anything else raises 403.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    attempt = db.scalar(
+        select(QuizAttempt)
+        .where(QuizAttempt.quiz_id == quiz.id)
+        .where(QuizAttempt.student_id == student.id)
+    )
+    if attempt is None:
+        return  # mid-quiz, always allowed
+
+    age = datetime.now(timezone.utc) - attempt.completed_at
+    if age > timedelta(days=FLAG_AFTER_SUBMIT_DAYS):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Flagging closed for this quiz — more than "
+                f"{FLAG_AFTER_SUBMIT_DAYS} days have passed since you submitted."
+            ),
+        )
+
+
+def upsert_question_flag(
+    db: Session,
+    *,
+    quiz_id: uuid.UUID,
+    question_id: uuid.UUID,
+    user: User,
+    reason: str | None,
+) -> QuestionFlag:
+    """Insert a new flag OR update the reason on an existing one.
+
+    Single endpoint covers both "first time flagging" and "edit my reason"
+    so the frontend doesn't need to know which case it's in.
+    """
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Only students can flag questions.")
+
+    quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    # Verify the question actually belongs to this quiz — defends against
+    # a tampered client trying to flag a question of a quiz they can't see.
+    question = db.scalar(
+        select(Question)
+        .where(Question.id == question_id)
+        .where(Question.quiz_id == quiz.id)
+    )
+    if question is None:
+        raise HTTPException(status_code=404, detail="Question not found in this quiz")
+
+    _ensure_flag_allowed(db, quiz, user)
+
+    clean_reason = (reason or "").strip() or None
+
+    existing = db.scalar(
+        select(QuestionFlag)
+        .where(QuestionFlag.question_id == question_id)
+        .where(QuestionFlag.student_id == user.id)
+    )
+    if existing is not None:
+        existing.reason = clean_reason
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    flag = QuestionFlag(
+        question_id=question_id,
+        student_id=user.id,
+        reason=clean_reason,
+    )
+    db.add(flag)
+    db.commit()
+    db.refresh(flag)
+    return flag
+
+
+def delete_question_flag(
+    db: Session,
+    *,
+    quiz_id: uuid.UUID,
+    question_id: uuid.UUID,
+    user: User,
+) -> None:
+    """Remove the current student's flag on this question, if any."""
+    if user.role != UserRole.STUDENT:
+        raise HTTPException(status_code=403, detail="Only students can unflag questions.")
+
+    quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    _ensure_flag_allowed(db, quiz, user)
+
+    flag = db.scalar(
+        select(QuestionFlag)
+        .where(QuestionFlag.question_id == question_id)
+        .where(QuestionFlag.student_id == user.id)
+    )
+    if flag is None:
+        return  # already not flagged — treat unflag as idempotent
+
+    db.delete(flag)
+    db.commit()
+
+
+def list_my_flags_for_quiz(
+    db: Session,
+    *,
+    quiz_id: uuid.UUID,
+    user: User,
+) -> list[QuestionFlag]:
+    """Return all this student's flags for questions in this quiz.
+
+    Used by the frontend at page load to color the flag icons correctly.
+    """
+    quiz = db.scalar(select(Quiz).where(Quiz.id == quiz_id))
+    if quiz is None:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+
+    return list(
+        db.scalars(
+            select(QuestionFlag)
+            .join(Question, QuestionFlag.question_id == Question.id)
+            .where(Question.quiz_id == quiz.id)
+            .where(QuestionFlag.student_id == user.id)
+        ).all()
+    )
+
+
+def get_attempt_for_review(
+    db: Session,
+    attempt_id: uuid.UUID,
+    user: User,
+) -> QuizAttemptResponse:
+    """Return one past attempt with full question + correct-answer + explanation
+    detail, so the student can revise from it later.
+
+    Auth: the owning student can view their own; teachers/admins can view any;
+    other students get a 404 (we hide existence rather than say 403, to avoid
+    leaking that the attempt exists).
+    """
+    attempt = db.scalar(
+        select(QuizAttempt)
+        .where(QuizAttempt.id == attempt_id)
+    )
+    if attempt is None:
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    is_owner = attempt.student_id == user.id
+    is_privileged = user.role in (UserRole.TEACHER, UserRole.ADMIN)
+    if not (is_owner or is_privileged):
+        # Hide existence
+        raise HTTPException(status_code=404, detail="Attempt not found")
+
+    # Pull the quiz + its questions so we can re-grade from the stored
+    # answers JSON and surface correct_answer / explanation that aren't in
+    # the answers blob.
+    quiz = db.scalar(
+        select(Quiz)
+        .where(Quiz.id == attempt.quiz_id)
+        .options(selectinload(Quiz.questions))
+    )
+    if quiz is None:
+        # Quiz was deleted but the attempt row survived. Edge case — still
+        # return the score / time, but graded_answers will be empty.
+        return QuizAttemptResponse(
+            id=attempt.id,
+            quiz_id=attempt.quiz_id,
+            student_id=attempt.student_id,
+            score=float(attempt.score),
+            total_questions=attempt.total_questions,
+            correct_count=attempt.correct_count,
+            time_taken_seconds=attempt.time_taken_seconds,
+            completed_at=attempt.completed_at,
+            graded_answers=[],
+            weak_topics=[],
+            next_difficulty_recommendation=None,
+        )
+
+    # Build {question_id: student_answer} from the stored answers JSON.
+    # We saved a list[dict] when the attempt was submitted; this rebuilds
+    # the same GradedAnswer list shape the result page already renders.
+    answers_by_qid: dict[uuid.UUID, dict] = {}
+    for row in attempt.answers or []:
+        try:
+            qid = uuid.UUID(row["question_id"])
+            answers_by_qid[qid] = row
+        except Exception:  # noqa: BLE001
+            continue
+
+    graded: list[GradedAnswer] = []
+    for q in sorted(quiz.questions, key=lambda x: x.order_index):
+        stored = answers_by_qid.get(q.id) or {}
+        student_ans = (stored.get("student_answer") or "").strip()
+        graded.append(
+            GradedAnswer(
+                question_id=q.id,
+                question_text=q.question_text,
+                student_answer=student_ans,
+                correct_answer=q.correct_answer,
+                is_correct=bool(stored.get("is_correct")),
+                topic=q.topic,
+                difficulty=q.difficulty.value,
+                explanation=q.explanation,
+            )
+        )
+
+    return QuizAttemptResponse(
+        id=attempt.id,
+        quiz_id=quiz.id,
+        student_id=attempt.student_id,
+        score=float(attempt.score),
+        total_questions=attempt.total_questions,
+        correct_count=attempt.correct_count,
+        time_taken_seconds=attempt.time_taken_seconds,
+        completed_at=attempt.completed_at,
+        graded_answers=graded,
+        weak_topics=[],  # weak-topic UI uses /attempts/me/weak-areas instead
+        next_difficulty_recommendation=None,
+    )
 
 
 # ════════════════════════════════════════════════════════════════

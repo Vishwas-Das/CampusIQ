@@ -32,6 +32,8 @@ class DocumentResponse(BaseModel):
     content_type: str | None = None
     file_size_bytes: int | None = None
     summary: str | None = None
+    chapter: str | None = None
+    description: str | None = None
     processing_status: DocumentStatusLiteral
     created_at: datetime
     compression_stats: CompressionStats | None = None
