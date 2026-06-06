@@ -685,6 +685,17 @@ export default function MockInterviewPage() {
                     )}
                   </p>
                 </div>
+              ) : recorder.state === 'recording' && speech.supported ? (
+                // Listening indicator: shows that SR is active before any
+                // words have been captured. Without this, a quiet first
+                // second feels like "nothing is happening" and users stop.
+                <div className="text-xs p-2 rounded-md bg-info/5 border border-info/20 text-info flex items-center gap-2">
+                  <span className="relative flex h-2 w-2">
+                    <span className="absolute inline-flex h-full w-full rounded-full bg-info opacity-75 animate-ping" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-info" />
+                  </span>
+                  <span>Listening… speak now. Wait a moment after you finish before clicking Stop.</span>
+                </div>
               ) : null}
 
               <div className="flex items-center gap-3">
