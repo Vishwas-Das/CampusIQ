@@ -1,5 +1,4 @@
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -15,42 +14,23 @@ import {
   CheckCircle2,
   Download,
   Loader2,
-  MessageSquare,
-  Mic,
-  MicOff,
   Play,
   RotateCcw,
   Send,
   Square,
   User,
-  Volume2,
 } from 'lucide-react'
 import Card, { CardHeader, CardTitle, CardLabel } from '../../components/ui/Card'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import type { BadgeVariant } from '../../components/ui/Badge'
 import ProgressBar from '../../components/ui/ProgressBar'
-import { ApiError, API_BASE_URL, interviewsApi } from '../../api/client'
-import { useMediaRecorder } from '../../hooks/useMediaRecorder'
-import { useBrowserSpeechRecognition } from '../../hooks/useBrowserSpeechRecognition'
-import { useBrowserSpeechSynthesis } from '../../hooks/useBrowserSpeechSynthesis'
+import { ApiError, interviewsApi } from '../../api/client'
 import type {
   HireVerdict,
   InterviewPersona,
   InterviewSessionResponse,
-  VoiceCapabilitiesResponse,
 } from '../../types'
-
-// The static-files mount lives at /audio on the backend root, NOT under
-// /api/v1. Strip the API prefix so we can build a playable URL from a path
-// like "/audio/abc123.mp3".
-const AUDIO_HOST = API_BASE_URL.replace(/\/api\/v\d+\/?$/, '')
-
-function buildAudioUrl(path: string | null | undefined): string | null {
-  if (!path) return null
-  if (path.startsWith('http://') || path.startsWith('https://')) return path
-  return `${AUDIO_HOST}${path}`
-}
 
 const stagger: Variants = {
   animate: { transition: { staggerChildren: 0 } },
@@ -121,23 +101,12 @@ export default function MockInterviewPage() {
   const [selectedCompany, setSelectedCompany] = useState<string>('Google')
   const [selectedRole, setSelectedRole] = useState<string>('SWE')
   const [selectedPersona, setSelectedPersona] = useState<InterviewPersona>('tough')
-  const [mode, setMode] = useState<'text' | 'voice'>('text')
   const [input, setInput] = useState<string>('')
 
   const [session, setSession] = useState<InterviewSessionResponse | null>(null)
   const [starting, setStarting] = useState(false)
   const [sending, setSending] = useState(false)
   const [error, setError] = useState<string | null>(null)
-
-  // Voice mode state (Phase 20)
-  const recorder = useMediaRecorder({ video: false })
-  const speech = useBrowserSpeechRecognition()
-  const synth = useBrowserSpeechSynthesis()
-  const [capabilities, setCapabilities] = useState<VoiceCapabilitiesResponse | null>(null)
-  const [lastAssistantAudio, setLastAssistantAudio] = useState<string | null>(null)
-  const [lastAssistantText, setLastAssistantText] = useState<string | null>(null)
-  const [lastTranscribedText, setLastTranscribedText] = useState<string | null>(null)
-  const audioRef = useRef<HTMLAudioElement | null>(null)
 
   const chatScrollRef = useRef<HTMLDivElement>(null)
 
@@ -147,50 +116,6 @@ export default function MockInterviewPage() {
       chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight
     }
   }, [session?.transcript?.length, view])
-
-  // Fetch the backend's voice capabilities once on mount so we know whether
-  // server-side Whisper / TTS are reachable. We always fall back gracefully:
-  // if the browser supports webkitSpeechRecognition we can do voice mode even
-  // when the server has no OpenAI key (the transcript is sent as a hint).
-  useEffect(() => {
-    let cancelled = false
-    interviewsApi
-      .voiceCapabilities()
-      .then((data) => {
-        if (!cancelled) setCapabilities(data)
-      })
-      .catch(() => {
-        // Capabilities endpoint may be unreachable; fall back to browser-only voice support.
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  // True if some form of voice can work — either browser ASR or server Whisper.
-  const voiceSupported = speech.supported || (capabilities?.asr_available ?? false)
-
-  // True when we'll fall back to the browser's built-in TTS because
-  // ElevenLabs isn't reachable. Used to label the UI honestly.
-  const usingBrowserTts = !capabilities?.tts_available && synth.supported
-
-  // Auto-play the assistant's last reply when a new audio URL arrives.
-  // If ElevenLabs returned no audio (capabilities.tts_available === false)
-  // we fall back to the browser's free speechSynthesis API so the demo
-  // always has *some* AI voice instead of awkward silence.
-  useEffect(() => {
-    if (lastAssistantAudio) {
-      const node = audioRef.current
-      if (node) {
-        node.src = lastAssistantAudio
-        node.play().catch(() => {
-          /* autoplay blocked — user can click the replay button */
-        })
-      }
-    } else if (lastAssistantText && synth.supported) {
-      synth.speak(lastAssistantText, { rate: 1.0, pitch: 1.0 })
-    }
-  }, [lastAssistantAudio, lastAssistantText, synth])
 
   // ── Actions ──
 
@@ -202,7 +127,7 @@ export default function MockInterviewPage() {
         company_target: selectedCompany,
         role_target: selectedRole,
         interviewer_persona: selectedPersona,
-        mode,
+        mode: 'text',
       })
       setSession(data)
       setView('interview')
@@ -240,105 +165,10 @@ export default function MockInterviewPage() {
     }
   }
 
-  // ── Voice mode (Phase 20) ──
-  const handleVoiceStart = useCallback(async () => {
-    if (!session || sending) return
-    setError(null)
-    setLastTranscribedText(null)
-    // Stop any AI voice still playing from the previous turn
-    synth.cancel()
-    if (audioRef.current) {
-      audioRef.current.pause()
-    }
-    speech.reset()
-    if (speech.supported) {
-      // SR-only path: use the browser's webkitSpeechRecognition alone.
-      // We DELIBERATELY skip MediaRecorder here. Why:
-      //   getUserMedia({audio: true}) lets MediaRecorder claim the single
-      //   audio stream, leaving SR with silence (the "incomplete words"
-      //   bug). Confidence Coach doesn't have this because video+audio
-      //   makes Chrome share the stream cleanly.
-      // Backend was updated to accept transcript-only voice turns.
-      speech.start()
-    } else {
-      // Fallback path: no browser SR (Firefox / Safari). Use MediaRecorder
-      // so the backend can transcribe via Whisper / ElevenLabs when keys
-      // are configured.
-      await recorder.start()
-    }
-  }, [recorder, sending, session, speech, synth])
-
-  const handleVoiceStop = useCallback(async () => {
-    if (!session) return
-
-    let audioBlob: Blob | null = null
-
-    if (speech.supported) {
-      // SR-only path: stop SR and read the buffered transcript. No audio
-      // file to send — backend accepts transcript-only voice turns now.
-      speech.stop()
-      // Give SR one tick to flush its final "isFinal" event into the buffer
-      // before we read it below.
-      await new Promise((r) => setTimeout(r, 200))
-    } else {
-      // Fallback path: stop the MediaRecorder and send the audio file so
-      // server-side ASR can transcribe it.
-      const result = await recorder.stop()
-      if (!result) return
-      audioBlob = result.blob
-    }
-
-    const transcript = (speech.transcript || '').trim()
-
-    if (speech.supported && !transcript) {
-      setError(
-        "We didn't catch any words. Speak a bit louder and try again — " +
-        "or use Text mode if your mic isn't being picked up.",
-      )
-      return
-    }
-
-    setSending(true)
-    setError(null)
-    try {
-      const response = await interviewsApi.sendVoice({
-        sessionId: session.id,
-        audioBlob,
-        browserTranscript: transcript || null,
-      })
-      setSession(response.session)
-      setLastTranscribedText(response.transcribed_text || transcript || null)
-
-      // Pluck the freshest assistant message off the transcript so the
-      // browser-TTS fallback knows what to speak when ElevenLabs is off.
-      const lastAssistant = [...response.session.transcript]
-        .reverse()
-        .find((m) => m.role === 'assistant')
-      setLastAssistantText(lastAssistant?.content ?? null)
-
-      const audioUrl = buildAudioUrl(response.assistant_audio_url)
-      setLastAssistantAudio(audioUrl)
-      if (response.interview_completed) {
-        setView('debrief')
-      }
-    } catch (err) {
-      setError(
-        err instanceof ApiError && typeof err.detail === 'string'
-          ? err.detail
-          : err instanceof Error
-            ? err.message
-            : 'Failed to submit your voice answer',
-      )
-    } finally {
-      setSending(false)
-    }
-  }, [recorder, session, speech])
-
   const handleEnd = async () => {
     if (!session) return
     if (!window.confirm('End this interview now? We\'ll generate your debrief with whatever we have so far.')) return
     setSending(true)
-    synth.cancel()
     try {
       const updated = await interviewsApi.end(session.id)
       setSession(updated)
@@ -358,10 +188,6 @@ export default function MockInterviewPage() {
     setSession(null)
     setInput('')
     setError(null)
-    setLastAssistantAudio(null)
-    setLastAssistantText(null)
-    setLastTranscribedText(null)
-    synth.cancel()
     setView('setup')
   }
 
@@ -473,46 +299,6 @@ export default function MockInterviewPage() {
                 </button>
               )
             })}
-          </div>
-        </motion.div>
-
-        <motion.div variants={fadeUp}>
-          <CardLabel className="mb-3">Interview Mode</CardLabel>
-          <div className="flex gap-2 items-center flex-wrap">
-            <Button
-              variant={mode === 'text' ? 'primary' : 'secondary'}
-              icon={MessageSquare}
-              onClick={() => setMode('text')}
-            >
-              Text
-            </Button>
-            <Button
-              variant={mode === 'voice' ? 'primary' : 'secondary'}
-              icon={voiceSupported ? Mic : MicOff}
-              onClick={() => voiceSupported && setMode('voice')}
-              disabled={!voiceSupported}
-              title={
-                voiceSupported
-                  ? 'Speak your answer — the AI will reply in voice if ElevenLabs is enabled.'
-                  : 'Voice needs Chrome (webkitSpeechRecognition) or a server-side OpenAI key.'
-              }
-            >
-              Voice
-            </Button>
-            {capabilities && (
-              <span className="text-xs text-[var(--text-tertiary)] ml-1">
-                {speech.supported
-                  ? 'Browser ASR ready'
-                  : capabilities.asr_available
-                    ? 'Server Whisper ready'
-                    : 'No transcription available'}
-                {capabilities.tts_available
-                  ? ' · ElevenLabs voices on'
-                  : synth.supported
-                    ? ' · Browser voice fallback'
-                    : ' · TTS off (text replies only)'}
-              </span>
-            )}
           </div>
         </motion.div>
 
@@ -668,112 +454,26 @@ export default function MockInterviewPage() {
               </div>
             )}
           </div>
-          {mode === 'text' ? (
-            <div className="p-3 border-t border-[var(--border-default)] flex gap-2">
-              <input
-                value={input}
-                onChange={(e: ChangeEvent<HTMLInputElement>) => setInput(e.target.value)}
-                onKeyDown={(e: KeyboardEvent<HTMLInputElement>) =>
-                  e.key === 'Enter' && void handleSend()
-                }
-                placeholder="Type your answer…"
-                className="input-base flex-1"
-                disabled={sending}
-              />
-              <Button
-                size="sm"
-                icon={sending ? undefined : Send}
-                onClick={() => void handleSend()}
-                disabled={sending || !input.trim()}
-              >
-                {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send'}
-              </Button>
-            </div>
-          ) : (
-            (() => {
-              // Voice mode can run via SR alone (Chrome/Edge — preferred,
-              // no mic competition) OR MediaRecorder (Firefox/Safari fallback).
-              // `isCapturing` covers both.
-              const isCapturing = speech.listening || recorder.state === 'recording'
-              return (
-            <div className="p-3 border-t border-[var(--border-default)] space-y-2">
-              {speech.transcript || speech.interim || lastTranscribedText ? (
-                <div className="text-xs text-[var(--text-secondary)] p-2 rounded-md bg-[var(--bg-secondary)] border border-[var(--border-default)]">
-                  <span className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)]">
-                    {isCapturing ? 'Live transcript' : 'You said'}
-                  </span>
-                  <p className="mt-1 text-[var(--text-primary)]">
-                    {speech.transcript || lastTranscribedText}
-                    {speech.interim && (
-                      <span className="text-[var(--text-tertiary)] italic"> {speech.interim}</span>
-                    )}
-                  </p>
-                </div>
-              ) : isCapturing && speech.supported ? (
-                // Listening indicator: shows that SR is active before any
-                // words have been captured. Without this, a quiet first
-                // second feels like "nothing is happening" and users stop.
-                <div className="text-xs p-2 rounded-md bg-info/5 border border-info/20 text-info flex items-center gap-2">
-                  <span className="relative flex h-2 w-2">
-                    <span className="absolute inline-flex h-full w-full rounded-full bg-info opacity-75 animate-ping" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-info" />
-                  </span>
-                  <span>Listening… speak now. Wait a moment after you finish before clicking Stop.</span>
-                </div>
-              ) : null}
-
-              <div className="flex items-center gap-3">
-                {isCapturing ? (
-                  <Button variant="danger" icon={Square} onClick={() => void handleVoiceStop()} loading={sending}>
-                    {recorder.state === 'recording'
-                      ? `Stop & Send (${Math.floor(recorder.elapsed / 60)}:${(recorder.elapsed % 60).toString().padStart(2, '0')})`
-                      : 'Stop & Send'}
-                  </Button>
-                ) : (
-                  <Button
-                    variant="primary"
-                    icon={Mic}
-                    onClick={() => void handleVoiceStart()}
-                    loading={recorder.state === 'preparing' || sending}
-                    disabled={recorder.state === 'preparing' || sending}
-                  >
-                    {sending ? 'Sending…' : 'Tap to speak'}
-                  </Button>
-                )}
-
-                {(lastAssistantAudio || (lastAssistantText && synth.supported)) && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (lastAssistantAudio) {
-                        audioRef.current?.play().catch(() => undefined)
-                      } else if (lastAssistantText) {
-                        synth.speak(lastAssistantText, { rate: 1.0, pitch: 1.0 })
-                      }
-                    }}
-                    className="inline-flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border border-[var(--border-default)] hover:bg-[var(--bg-tertiary)] text-[var(--text-secondary)]"
-                  >
-                    <Volume2 className="h-3.5 w-3.5" />
-                    {synth.speaking ? 'Speaking…' : 'Replay AI voice'}
-                  </button>
-                )}
-
-                <span className="text-[10px] text-[var(--text-tertiary)] ml-auto">
-                  {speech.supported ? 'Browser transcribing' : 'Server transcribing'}
-                  {capabilities?.tts_available
-                    ? ' · ElevenLabs voice'
-                    : usingBrowserTts
-                      ? ' · Browser voice'
-                      : ''}
-                </span>
-              </div>
-
-              {/* Hidden audio element used to play back assistant TTS */}
-              <audio ref={audioRef} className="hidden" controls />
-            </div>
-              )
-            })()
-          )}
+          <div className="p-3 border-t border-[var(--border-default)] flex gap-2">
+            <input
+              value={input}
+              onChange={(e: ChangeEvent<HTMLInputElement>) => setInput(e.target.value)}
+              onKeyDown={(e: KeyboardEvent<HTMLInputElement>) =>
+                e.key === 'Enter' && void handleSend()
+              }
+              placeholder="Type your answer…"
+              className="input-base flex-1"
+              disabled={sending}
+            />
+            <Button
+              size="sm"
+              icon={sending ? undefined : Send}
+              onClick={() => void handleSend()}
+              disabled={sending || !input.trim()}
+            >
+              {sending ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Send'}
+            </Button>
+          </div>
         </motion.div>
 
         <motion.div variants={fadeUp} className="flex gap-3">
