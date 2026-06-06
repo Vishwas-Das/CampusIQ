@@ -152,14 +152,24 @@ async def submit_voice_turn(
     session_id: uuid.UUID,
     db: DbSession,
     current_user: CurrentUser,
-    audio: Annotated[UploadFile, File(description="Candidate's spoken answer")],
-    # Browser-side Web Speech API transcript — optional override so voice
-    # interviews work without the server-side OPENAI_API_KEY being set.
+    # Audio is now OPTIONAL. When the browser uses webkitSpeechRecognition
+    # (Chrome / Edge), the frontend skips MediaRecorder entirely to avoid
+    # the audio-only `getUserMedia` stealing the stream from SR. In that
+    # path only `browser_transcript` is sent and we don't need the audio.
+    audio: Annotated[UploadFile | None, File(description="Optional spoken answer")] = None,
     browser_transcript: Annotated[str | None, Form()] = None,
 ) -> InterviewVoiceTurnResponse:
-    audio_bytes = await audio.read()
-    if not audio_bytes:
-        raise HTTPException(status_code=400, detail="Audio file is empty")
+    audio_bytes = b""
+    if audio is not None:
+        audio_bytes = await audio.read()
+
+    # Require at least ONE source. If neither audio bytes nor a browser
+    # transcript came through, there's nothing to grade.
+    if not audio_bytes and not (browser_transcript and browser_transcript.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="Submit an audio file OR a browser-side transcript.",
+        )
 
     result = mock_interview.voice_turn(
         db,

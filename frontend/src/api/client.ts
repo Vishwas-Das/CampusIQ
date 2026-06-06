@@ -681,7 +681,10 @@ export const communityApi = {
 
 export interface VoiceTurnUploadOptions {
   sessionId: string
-  audioBlob: Blob
+  /** Optional — omit it when the browser has already transcribed via the
+   *  Web Speech API. Backend accepts the request as long as either
+   *  audioBlob or browserTranscript is present. */
+  audioBlob?: Blob | null
   browserTranscript?: string | null
 }
 
@@ -703,7 +706,12 @@ export const interviewsApi = {
   // via the Web Speech API so the server doesn't need to call Whisper.
   sendVoice: ({ sessionId, audioBlob, browserTranscript }: VoiceTurnUploadOptions) => {
     const formData = new FormData()
-    formData.append('audio', audioBlob, 'answer.webm')
+    // Only attach audio when present. In the SR-only path (Chrome with
+    // webkitSpeechRecognition supported) we skip MediaRecorder to avoid
+    // the mic-stealing bug, so audioBlob is null/undefined.
+    if (audioBlob) {
+      formData.append('audio', audioBlob, 'answer.webm')
+    }
     if (browserTranscript && browserTranscript.trim()) {
       formData.append('browser_transcript', browserTranscript.trim())
     }

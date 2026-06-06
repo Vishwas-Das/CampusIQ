@@ -250,38 +250,50 @@ export default function MockInterviewPage() {
     if (audioRef.current) {
       audioRef.current.pause()
     }
-    // Start SpeechRecognition FIRST so it claims a slot on the mic stream.
     speech.reset()
     if (speech.supported) {
+      // SR-only path: use the browser's webkitSpeechRecognition alone.
+      // We DELIBERATELY skip MediaRecorder here. Why:
+      //   getUserMedia({audio: true}) lets MediaRecorder claim the single
+      //   audio stream, leaving SR with silence (the "incomplete words"
+      //   bug). Confidence Coach doesn't have this because video+audio
+      //   makes Chrome share the stream cleanly.
+      // Backend was updated to accept transcript-only voice turns.
       speech.start()
-      // Small delay so SR fully acquires the mic stream BEFORE MediaRecorder
-      // grabs it via getUserMedia({audio: true}). Without this, Chrome can
-      // route the audio only to MediaRecorder and SR ends up with silence
-      // — that's the "voice not capturing words" bug we saw on audio-only
-      // recordings (Confidence Coach uses video+audio and doesn't hit it).
-      await new Promise((r) => setTimeout(r, 300))
+    } else {
+      // Fallback path: no browser SR (Firefox / Safari). Use MediaRecorder
+      // so the backend can transcribe via Whisper / ElevenLabs when keys
+      // are configured.
+      await recorder.start()
     }
-    await recorder.start()
   }, [recorder, sending, session, speech, synth])
 
   const handleVoiceStop = useCallback(async () => {
     if (!session) return
-    // Stop SpeechRecognition FIRST so it flushes its final buffer into the
-    // transcript before we read it below. The recorder stop is async too.
-    if (speech.supported) speech.stop()
-    const result = await recorder.stop()
-    if (!result) return
+
+    let audioBlob: Blob | null = null
+
+    if (speech.supported) {
+      // SR-only path: stop SR and read the buffered transcript. No audio
+      // file to send — backend accepts transcript-only voice turns now.
+      speech.stop()
+      // Give SR one tick to flush its final "isFinal" event into the buffer
+      // before we read it below.
+      await new Promise((r) => setTimeout(r, 200))
+    } else {
+      // Fallback path: stop the MediaRecorder and send the audio file so
+      // server-side ASR can transcribe it.
+      const result = await recorder.stop()
+      if (!result) return
+      audioBlob = result.blob
+    }
 
     const transcript = (speech.transcript || '').trim()
 
-    // If browser SR is supported but came back empty, the user either didn't
-    // speak loud enough, or Chrome's audio router didn't share the mic with
-    // SR. Either way, we can't help — server-side ASR keys are empty too.
-    // Surface a clear message instead of silently submitting nothing.
     if (speech.supported && !transcript) {
       setError(
-        "We didn't catch any words. Speak a bit louder, check your mic, " +
-        "or try the Text mode while the voice path is being debugged.",
+        "We didn't catch any words. Speak a bit louder and try again — " +
+        "or use Text mode if your mic isn't being picked up.",
       )
       return
     }
@@ -291,7 +303,7 @@ export default function MockInterviewPage() {
     try {
       const response = await interviewsApi.sendVoice({
         sessionId: session.id,
-        audioBlob: result.blob,
+        audioBlob,
         browserTranscript: transcript || null,
       })
       setSession(response.session)
@@ -678,11 +690,17 @@ export default function MockInterviewPage() {
               </Button>
             </div>
           ) : (
+            (() => {
+              // Voice mode can run via SR alone (Chrome/Edge — preferred,
+              // no mic competition) OR MediaRecorder (Firefox/Safari fallback).
+              // `isCapturing` covers both.
+              const isCapturing = speech.listening || recorder.state === 'recording'
+              return (
             <div className="p-3 border-t border-[var(--border-default)] space-y-2">
               {speech.transcript || speech.interim || lastTranscribedText ? (
                 <div className="text-xs text-[var(--text-secondary)] p-2 rounded-md bg-[var(--bg-secondary)] border border-[var(--border-default)]">
                   <span className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)]">
-                    {recorder.state === 'recording' ? 'Live transcript' : 'You said'}
+                    {isCapturing ? 'Live transcript' : 'You said'}
                   </span>
                   <p className="mt-1 text-[var(--text-primary)]">
                     {speech.transcript || lastTranscribedText}
@@ -691,7 +709,7 @@ export default function MockInterviewPage() {
                     )}
                   </p>
                 </div>
-              ) : recorder.state === 'recording' && speech.supported ? (
+              ) : isCapturing && speech.supported ? (
                 // Listening indicator: shows that SR is active before any
                 // words have been captured. Without this, a quiet first
                 // second feels like "nothing is happening" and users stop.
@@ -705,9 +723,11 @@ export default function MockInterviewPage() {
               ) : null}
 
               <div className="flex items-center gap-3">
-                {recorder.state === 'recording' ? (
+                {isCapturing ? (
                   <Button variant="danger" icon={Square} onClick={() => void handleVoiceStop()} loading={sending}>
-                    Stop & Send ({Math.floor(recorder.elapsed / 60)}:{(recorder.elapsed % 60).toString().padStart(2, '0')})
+                    {recorder.state === 'recording'
+                      ? `Stop & Send (${Math.floor(recorder.elapsed / 60)}:${(recorder.elapsed % 60).toString().padStart(2, '0')})`
+                      : 'Stop & Send'}
                   </Button>
                 ) : (
                   <Button
@@ -751,6 +771,8 @@ export default function MockInterviewPage() {
               {/* Hidden audio element used to play back assistant TTS */}
               <audio ref={audioRef} className="hidden" controls />
             </div>
+              )
+            })()
           )}
         </motion.div>
 
