@@ -123,15 +123,23 @@ def get_class_analytics(
     else:
         completion_rate = None
 
-    # Most-missed topic = topic with the lowest correctness % (and ≥ 2 attempts)
+    # Most-missed topic = topic with the lowest correctness %.
+    # Tiebreaker: pick the topic with MORE attempts — it's a more confident
+    # signal of class-wide struggle than a single-data-point fluke. Without
+    # this, dict iteration order decides ties and the answer changes between
+    # runs.
     most_missed = None
     most_missed_score = 101.0
+    most_missed_attempts = -1
     for topic, b in topic_bucket.items():
         if b["total"] < WEAK_TOPIC_MIN_ATTEMPTS:
             continue
         pct = (b["correct"] / b["total"]) * 100
-        if pct < most_missed_score:
+        if pct < most_missed_score or (
+            pct == most_missed_score and b["total"] > most_missed_attempts
+        ):
             most_missed_score = pct
+            most_missed_attempts = b["total"]
             most_missed = topic
 
     headline = AnalyticsHeadline(

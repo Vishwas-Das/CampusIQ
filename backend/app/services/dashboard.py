@@ -271,11 +271,12 @@ def get_teacher_analytics(
                 "quiz_title": quiz.title,
             }
 
-    # ── Build weakest topics: ascending by accuracy, top 5. Require >=2
-    # attempts so a single fluke wrong doesn't pollute the list. ──
+    # ── Build weakest topics: ascending by accuracy, top 5. Threshold of 1
+    # so small quizzes (where each question has a unique topic) still show
+    # up — matches analytics.py WEAK_TOPIC_MIN_ATTEMPTS=1. ──
     topic_rows: list[TopicAccuracyRow] = []
     for topic, total in topic_total.items():
-        if total < 2:
+        if total < 1:
             continue
         correct = topic_correct[topic]
         accuracy = (correct / total) * 100
@@ -291,8 +292,9 @@ def get_teacher_analytics(
     weakest_topics = topic_rows[:5]
 
     # ── Build most missed questions: fetch text for the top candidates,
-    # then sort ascending by accuracy. ──
-    candidate_ids = [qid for qid, total in q_total.items() if total >= 2]
+    # then sort ascending by accuracy. Threshold of 1 (same reasoning as
+    # topics above — small classes / fresh data shouldn't disappear). ──
+    candidate_ids = [qid for qid, total in q_total.items() if total >= 1]
     question_text_map: dict[str, str] = {}
     if candidate_ids:
         from app.models.quiz import Question
