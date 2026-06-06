@@ -81,6 +81,10 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
   const recognitionRef = useRef<SpeechRecognitionType | null>(null)
   // Accumulate all final segments across one session.
   const finalBufferRef = useRef<string>('')
+  // Set to true when the caller WANTS continuous listening (e.g. during a
+  // voice recording). If Chrome auto-stops SR mid-recording, the `onend`
+  // handler restarts it without resetting the buffer.
+  const wantContinuousRef = useRef<boolean>(false)
 
   const reset = useCallback(() => {
     setTranscript('')
@@ -89,14 +93,14 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
     finalBufferRef.current = ''
   }, [])
 
-  const start = useCallback(() => {
+  const launchRecognition = useCallback((preserveBuffer: boolean) => {
     const Ctor = getSpeechRecognitionCtor()
     if (!Ctor) {
       setError('Browser speech recognition is not supported in this browser')
       return
     }
     if (recognitionRef.current) return  // already running
-    reset()
+    if (!preserveBuffer) reset()
 
     const recog = new Ctor()
     recog.continuous = true
@@ -128,6 +132,17 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
     recog.onend = () => {
       setListening(false)
       recognitionRef.current = null
+      // Chrome auto-stops SR after a stretch of silence or competing audio
+      // consumers (MediaRecorder). When the caller asked for continuous
+      // listening, restart it without dropping the accumulated buffer.
+      if (wantContinuousRef.current) {
+        // Slight delay so we don't busy-loop if start() also fails.
+        window.setTimeout(() => {
+          if (wantContinuousRef.current && !recognitionRef.current) {
+            launchRecognition(/* preserveBuffer */ true)
+          }
+        }, 200)
+      }
     }
 
     try {
@@ -140,7 +155,14 @@ export function useBrowserSpeechRecognition(): UseBrowserSpeechRecognitionReturn
     }
   }, [reset])
 
+  const start = useCallback(() => {
+    wantContinuousRef.current = true
+    launchRecognition(/* preserveBuffer */ false)
+  }, [launchRecognition])
+
   const stop = useCallback(() => {
+    // Tell the auto-restart logic to NOT restart this time.
+    wantContinuousRef.current = false
     const recog = recognitionRef.current
     if (recog) {
       try {

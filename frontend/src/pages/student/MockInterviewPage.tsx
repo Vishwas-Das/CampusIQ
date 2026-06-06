@@ -251,10 +251,16 @@ export default function MockInterviewPage() {
       audioRef.current.pause()
     }
     // Start SpeechRecognition FIRST so it claims a slot on the mic stream.
-    // If MediaRecorder grabs first, Chrome sometimes leaves SR with silence
-    // — that's the "voice not capturing words" bug.
     speech.reset()
-    if (speech.supported) speech.start()
+    if (speech.supported) {
+      speech.start()
+      // Small delay so SR fully acquires the mic stream BEFORE MediaRecorder
+      // grabs it via getUserMedia({audio: true}). Without this, Chrome can
+      // route the audio only to MediaRecorder and SR ends up with silence
+      // — that's the "voice not capturing words" bug we saw on audio-only
+      // recordings (Confidence Coach uses video+audio and doesn't hit it).
+      await new Promise((r) => setTimeout(r, 300))
+    }
     await recorder.start()
   }, [recorder, sending, session, speech, synth])
 
