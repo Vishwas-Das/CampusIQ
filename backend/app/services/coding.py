@@ -33,6 +33,12 @@ logger = logging.getLogger(__name__)
 UserProblemStatus = Literal["solved", "attempted", "unsolved"]
 
 
+def _leetcode_url(problem: CodingProblem) -> str:
+    """The problem's canonical LeetCode URL — explicit column, or derived from
+    the slug (our slugs deliberately match LeetCode's)."""
+    return problem.leetcode_url or f"https://leetcode.com/problems/{problem.slug}/"
+
+
 # ──────────────────────────────────────────────────────────────────
 # List + per-user status
 # ──────────────────────────────────────────────────────────────────
@@ -105,6 +111,7 @@ def list_problems(
                 "title": p.title,
                 "difficulty": p.difficulty.value,
                 "topic_tags": p.topic_tags or [],
+                "leetcode_url": _leetcode_url(p),
                 "user_status": user_status,
             }
         )
@@ -158,6 +165,7 @@ def get_problem(db: Session, user: User, slug: str) -> dict:
         "comparator": problem.comparator,
         "topic_tags": problem.topic_tags or [],
         "skill_node_names": problem.skill_node_names or [],
+        "leetcode_url": _leetcode_url(problem),
         "user_status": user_status,
     }
 
@@ -240,6 +248,63 @@ def submit(
 
     return {
         "submission": submission,
+        "first_solve": first_solve,
+        "xp_earned": xp_earned,
+        "new_level": new_level,
+        "leveled_up": leveled_up,
+    }
+
+
+def mark_solved(db: Session, user: User, *, slug: str) -> dict:
+    """Self-reported solve: the student says they solved this on LeetCode.
+
+    On the FIRST report we record a synthetic PASSED submission (so the problem
+    shows as solved going forward), bump skill mastery, and award the
+    CODING_PROBLEM_SOLVED XP event — identical to a first in-app AC. Repeat
+    reports are idempotent no-ops (no row, no double-award).
+
+    We don't police this: gaming it only robs the student. The coach is help,
+    not a proctor.
+    """
+    problem = _get_by_slug_or_404(db, slug)
+    already_solved = _has_accepted(db, user, problem.id)
+
+    first_solve = False
+    xp_earned = 0
+    new_level: int | None = None
+    leveled_up = False
+
+    if not already_solved:
+        submission = CodingSubmission(
+            user_id=user.id,
+            problem_id=problem.id,
+            language=CodingLanguage.PYTHON,
+            code="# Marked solved on LeetCode (self-reported)",
+            status=CodingSubmissionStatus.PASSED,
+            passed_count=0,
+            total_count=0,
+            runtime_ms=None,
+            error_message=None,
+        )
+        db.add(submission)
+        db.flush()  # populate submission.id for the XP reference
+
+        first_solve = True
+        coding_skill_mastery.bump_mastery_for_solve(db, user, problem)
+        awarded = xp_service.award_xp(
+            db,
+            user,
+            XPEventType.CODING_PROBLEM_SOLVED,
+            reference_id=submission.id,
+        )
+        xp_earned = awarded.event.xp_earned
+        new_level = awarded.new_level
+        leveled_up = awarded.leveled_up
+        db.commit()
+
+    return {
+        "slug": slug,
+        "user_status": "solved",
         "first_solve": first_solve,
         "xp_earned": xp_earned,
         "new_level": new_level,

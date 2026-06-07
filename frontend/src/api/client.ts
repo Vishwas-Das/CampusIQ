@@ -20,6 +20,8 @@ import type {
   ChatSessionCreate,
   ChatSessionWithMessages,
   ChatType,
+  CoachMode,
+  HintLevel,
   AdminDashboardResponse,
   AdminUserListResponse,
   BossBattleDetail,
@@ -29,6 +31,7 @@ import type {
   ChunkCreate,
   ChunkUpdate,
   CodingStatsResponse,
+  MarkSolvedResponse,
   CollegeDocument,
   CollegeDocumentCategory,
   KnowledgeSuggestion,
@@ -282,14 +285,22 @@ export interface StreamMessageOptions {
   subjectId?: string
   /** Note Assistant mode. Server ignores it for non-NA sessions. */
   mode?: AssistantMode
+  /** DSA Coach controls. Server ignores them for non-coach sessions. */
+  coachMode?: CoachMode
+  hintLevel?: HintLevel
   onChunk: (delta: string) => void
   signal?: AbortSignal
 }
 
 export const chatApi = {
-  listSessions: (chatType: ChatType = 'note_assistant', subjectId?: string) => {
+  listSessions: (
+    chatType: ChatType = 'note_assistant',
+    subjectId?: string,
+    codingProblemId?: string,
+  ) => {
     const params = new URLSearchParams({ chat_type: chatType })
     if (subjectId) params.set('subject_id', subjectId)
+    if (codingProblemId) params.set('coding_problem_id', codingProblemId)
     return api.get<ChatSession[]>(`/chat/sessions?${params.toString()}`)
   },
   createSession: (data: ChatSessionCreate) => api.post<ChatSession>('/chat/sessions', data),
@@ -300,7 +311,7 @@ export const chatApi = {
    * Stream a new message into an existing session. The Promise resolves once
    * the server is done streaming. Each text delta is delivered to `onChunk`.
    */
-  streamMessage: async ({ sessionId, content, subjectId, mode, onChunk, signal }: StreamMessageOptions): Promise<void> => {
+  streamMessage: async ({ sessionId, content, subjectId, mode, coachMode, hintLevel, onChunk, signal }: StreamMessageOptions): Promise<void> => {
     const token = useAuthStore.getState().token
     if (!token) throw new ApiError(401, 'Not authenticated', null)
 
@@ -310,7 +321,14 @@ export const chatApi = {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
       },
-      body: JSON.stringify({ content, subject_id: subjectId, stream: true, mode }),
+      body: JSON.stringify({
+        content,
+        subject_id: subjectId,
+        stream: true,
+        mode,
+        coach_mode: coachMode,
+        hint_level: hintLevel,
+      }),
       signal,
     })
 
@@ -793,6 +811,8 @@ export const codingApi = {
     api.get<ProblemRunnerPayload>(`/coding/problems/${slug}/runner`),
   submit: (slug: string, payload: SubmitRequest) =>
     api.post<SubmitResultResponse>(`/coding/problems/${slug}/submit`, payload),
+  markSolved: (slug: string) =>
+    api.post<MarkSolvedResponse>(`/coding/problems/${slug}/mark-solved`, {}),
   listSubmissions: (slug: string) =>
     api.get<SubmissionResponse[]>(`/coding/problems/${slug}/submissions`),
   getStats: () => api.get<CodingStatsResponse>('/coding/stats'),

@@ -85,6 +85,10 @@ class CodingProblem(Base):
     topic_tags: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     skill_node_names: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
+    # Canonical LeetCode problem URL for the "Open on LeetCode" redirect. When
+    # null, the API derives `https://leetcode.com/problems/<slug>/` from the slug.
+    leetcode_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

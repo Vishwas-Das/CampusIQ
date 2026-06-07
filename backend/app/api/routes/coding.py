@@ -29,6 +29,7 @@ from app.models.coding import (
 from app.schemas.coding import (
     CodingDifficultyLiteral,
     CodingStatsResponse,
+    MarkSolvedResponse,
     ProblemDetail,
     ProblemListItem,
     ProblemRunnerPayload,
@@ -141,6 +142,17 @@ def submit(
         new_level=result["new_level"],
         leveled_up=result["leveled_up"],
     )
+
+
+@router.post(
+    "/problems/{slug}/mark-solved",
+    response_model=MarkSolvedResponse,
+    summary="Self-report that you solved this on LeetCode — awards XP + mastery on first solve",
+)
+def mark_solved(
+    slug: str, db: DbSession, current_user: CurrentUser
+) -> MarkSolvedResponse:
+    return MarkSolvedResponse(**coding_service.mark_solved(db, current_user, slug=slug))
 
 
 @router.get(

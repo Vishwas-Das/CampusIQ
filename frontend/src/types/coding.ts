@@ -30,6 +30,7 @@ export interface ProblemListItem {
   title: string
   difficulty: CodingDifficulty
   topic_tags: string[]
+  leetcode_url: string
   user_status: UserProblemStatus
 }
 
@@ -49,6 +50,7 @@ export interface ProblemDetail {
   comparator: string
   topic_tags: string[]
   skill_node_names: string[]
+  leetcode_url: string
   user_status: UserProblemStatus
 }
 
@@ -97,6 +99,15 @@ export interface CodingStatsResponse {
   total_problems: number
   total_submissions: number
   streak_days: number
+}
+
+export interface MarkSolvedResponse {
+  slug: string
+  user_status: UserProblemStatus
+  first_solve: boolean
+  xp_earned: number
+  new_level?: number | null
+  leveled_up: boolean
 }
 
 export interface ListProblemsOptions {

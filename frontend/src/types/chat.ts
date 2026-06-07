@@ -8,8 +8,13 @@ export type ChatType =
   | 'placement_chatbot'
   | 'resume_builder'
   | 'admin_knowledge'
+  | 'dsa_coach'
 
 export type MessageRole = 'user' | 'assistant' | 'system'
+
+// DSA Coach: two modes, and a three-rung hint-intensity ladder.
+export type CoachMode = 'hint' | 'solution'
+export type HintLevel = 'nudge' | 'guide' | 'spell_it_out'
 
 /**
  * Note Assistant response modes — the student picks one per message.
@@ -44,6 +49,8 @@ export interface ChatSession {
   user_id: string
   chat_type: ChatType
   subject_id: string | null
+  /** For DSA coach sessions: the coding problem this chat is bound to. */
+  coding_problem_id: string | null
   title: string | null
   created_at: string
   last_message_at: string
@@ -56,6 +63,7 @@ export interface ChatSessionWithMessages extends ChatSession {
 export interface ChatSessionCreate {
   chat_type?: ChatType
   subject_id?: string
+  coding_problem_id?: string
   title?: string
 }
 

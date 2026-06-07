@@ -26,6 +26,7 @@ def list_sessions(
     chat_type: ChatType,
     *,
     subject_id: uuid.UUID | None = None,
+    coding_problem_id: uuid.UUID | None = None,
 ) -> list[ChatSession]:
     """All chat sessions belonging to the current user, newest first."""
     stmt = (
@@ -36,6 +37,8 @@ def list_sessions(
     )
     if subject_id is not None:
         stmt = stmt.where(ChatSession.subject_id == subject_id)
+    if coding_problem_id is not None:
+        stmt = stmt.where(ChatSession.coding_problem_id == coding_problem_id)
     return list(db.scalars(stmt).all())
 
 
@@ -65,6 +68,7 @@ def create_session(
     chat_type: ChatType,
     *,
     subject_id: uuid.UUID | None = None,
+    coding_problem_id: uuid.UUID | None = None,
     title: str | None = None,
 ) -> ChatSession:
     """Create a fresh chat session."""
@@ -72,6 +76,7 @@ def create_session(
         user_id=user.id,
         chat_type=chat_type,
         subject_id=subject_id,
+        coding_problem_id=coding_problem_id,
         title=title,
     )
     db.add(session)

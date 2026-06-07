@@ -47,6 +47,7 @@ class ProblemListItem(BaseModel):
     title: str
     difficulty: CodingDifficultyLiteral
     topic_tags: list[str]
+    leetcode_url: str
     user_status: UserProblemStatus = "unsolved"
 
 
@@ -72,6 +73,7 @@ class ProblemDetail(BaseModel):
     comparator: str
     topic_tags: list[str]
     skill_node_names: list[str]
+    leetcode_url: str
     user_status: UserProblemStatus = "unsolved"
 
 
@@ -132,3 +134,16 @@ class CodingStatsResponse(BaseModel):
     total_problems: int
     total_submissions: int
     streak_days: int
+
+
+class MarkSolvedResponse(BaseModel):
+    """Returned by POST /problems/{slug}/mark-solved — the student self-reports
+    that they solved it on LeetCode. On the first such report we award XP +
+    mastery, exactly like a first in-app AC; repeats are idempotent no-ops."""
+
+    slug: str
+    user_status: UserProblemStatus = "solved"
+    first_solve: bool
+    xp_earned: int = 0
+    new_level: int | None = None
+    leveled_up: bool = False

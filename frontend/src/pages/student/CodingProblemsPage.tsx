@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { motion, type Variants } from 'framer-motion'
-import { AlertCircle, Loader2, Check, Circle, Clock } from 'lucide-react'
+import { AlertCircle, Loader2, Check, Circle, Clock, ExternalLink, MessageCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { ApiError, codingApi } from '../../api/client'
 import DifficultyBadge from '../../components/coding/DifficultyBadge'
@@ -72,9 +72,10 @@ export default function CodingProblemsPage() {
       <header className="space-y-2">
         <h1 className="text-2xl font-bold text-[var(--text-primary)] m-0">Coding</h1>
         <p className="text-sm text-[var(--text-secondary)] max-w-2xl">
-          LeetCode-style practice. Code runs in your browser via Pyodide — no
-          server round-trips, no setup. Solving a problem updates your skill
-          tree and adds to your XP.
+          Solve on LeetCode, learn with the coach. Open any problem to get a
+          Socratic DSA coach that nudges you toward the insight instead of
+          handing over the answer — and log it as solved to grow your skill tree
+          and XP. Prefer to stay in-app? An in-browser code editor is one tap away.
         </p>
       </header>
 
@@ -266,31 +267,47 @@ function ProblemList({ rows }: { rows: ProblemListItem[] }) {
       variants={{ animate: { transition: { staggerChildren: 0.04 } } }}
     >
       {rows.map((row) => (
-        <motion.div key={row.id} variants={fadeUp}>
-          <Link
-            to={`/student/coding/${row.slug}`}
-            className="block rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-colors p-4"
-          >
-            <div className="flex items-center gap-4">
-              <StatusIcon status={row.user_status} />
-              <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-[var(--text-primary)] truncate">
-                  {row.title}
-                </div>
-                <div className="flex flex-wrap items-center gap-1.5 mt-1">
-                  {row.topic_tags.map((t) => (
-                    <span
-                      key={t}
-                      className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)]"
-                    >
-                      {t}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <DifficultyBadge difficulty={row.difficulty} size="sm" />
+        <motion.div
+          key={row.id}
+          variants={fadeUp}
+          className="flex items-center gap-4 rounded-lg border border-[var(--border-default)] bg-[var(--bg-elevated)] hover:border-[var(--border-strong)] transition-colors p-4"
+        >
+          <StatusIcon status={row.user_status} />
+          {/* Main clickable area opens the problem (defaults to the coach view) */}
+          <Link to={`/student/coding/${row.slug}`} className="min-w-0 flex-1 group">
+            <div className="text-sm font-semibold text-[var(--text-primary)] truncate group-hover:underline">
+              {row.title}
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5 mt-1">
+              {row.topic_tags.map((t) => (
+                <span
+                  key={t}
+                  className="text-[10px] uppercase tracking-wider text-[var(--text-tertiary)]"
+                >
+                  {t}
+                </span>
+              ))}
             </div>
           </Link>
+          <DifficultyBadge difficulty={row.difficulty} size="sm" />
+          <Link
+            to={`/student/coding/${row.slug}`}
+            className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-[var(--text-secondary)] border border-[var(--border-default)] hover:text-[var(--text-primary)] hover:border-[var(--border-strong)] transition-colors"
+            title="Open the DSA coach for this problem"
+          >
+            <MessageCircle className="h-3 w-3" />
+            Coach
+          </Link>
+          <a
+            href={row.leetcode_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-medium text-[var(--text-secondary)] border border-[var(--border-default)] hover:text-[var(--text-primary)] hover:border-[var(--border-strong)] transition-colors"
+            title="Open on LeetCode"
+          >
+            <ExternalLink className="h-3 w-3" />
+            LeetCode
+          </a>
         </motion.div>
       ))}
     </motion.div>

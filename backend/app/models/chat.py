@@ -19,6 +19,8 @@ class ChatType(str, enum.Enum):
     RESUME_BUILDER = "resume_builder"
     # Admin-only conversation that proposes edits to college document chunks.
     ADMIN_KNOWLEDGE = "admin_knowledge"
+    # Socratic DSA coach — a hint-ladder tutor bound to a single coding problem.
+    DSA_COACH = "dsa_coach"
 
 
 class MessageRole(str, enum.Enum):
@@ -41,6 +43,11 @@ class ChatSession(Base):
     )
     subject_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("subjects.id", ondelete="CASCADE"), index=True
+    )
+    # For DSA coach sessions: the coding problem this conversation is bound to.
+    # SET NULL (not CASCADE) so deleting a seed problem doesn't wipe the chat.
+    coding_problem_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("coding_problems.id", ondelete="SET NULL"), index=True
     )
     title: Mapped[str | None] = mapped_column(String(255))
     created_at: Mapped[datetime] = mapped_column(

@@ -46,6 +46,7 @@ class SeedProblem:
     comparator: str = "exact"
     topic_tags: list[str] = field(default_factory=list)
     skill_node_names: list[str] = field(default_factory=list)
+    leetcode_url: str | None = None  # canonical LeetCode URL for the redirect
 
 
 # ────────────────────────────────────────────────────────────────
@@ -125,6 +126,7 @@ use the same element twice. You can return the answer in any order.
     comparator="sorted",
     topic_tags=["Arrays", "Hashing"],
     skill_node_names=["Arrays", "Hashing"],
+    leetcode_url="https://leetcode.com/problems/two-sum/",
 )
 
 
@@ -197,6 +199,7 @@ Given a string `s`, return `True` if it is a palindrome, or `False` otherwise.
     comparator="exact",
     topic_tags=["Strings", "Two Pointers"],
     skill_node_names=["Strings"],
+    leetcode_url="https://leetcode.com/problems/valid-palindrome/",
 )
 
 
@@ -267,6 +270,7 @@ valid. A string is valid if:
     comparator="exact",
     topic_tags=["Stacks", "Strings"],
     skill_node_names=["Stacks & Queues"],
+    leetcode_url="https://leetcode.com/problems/valid-parentheses/",
 )
 
 
@@ -341,6 +345,7 @@ MAXIMUM_SUBARRAY = SeedProblem(
     comparator="exact",
     topic_tags=["Arrays", "Dynamic Programming"],
     skill_node_names=["Arrays", "Dynamic Programming"],
+    leetcode_url="https://leetcode.com/problems/maximum-subarray/",
 )
 
 
@@ -420,6 +425,7 @@ You may not slant the container.
     comparator="exact",
     topic_tags=["Arrays", "Two Pointers"],
     skill_node_names=["Arrays"],
+    leetcode_url="https://leetcode.com/problems/container-with-most-water/",
 )
 
 
@@ -460,6 +466,7 @@ def seed_if_empty(db: Session) -> int:
             comparator=seed.comparator,
             topic_tags=seed.topic_tags,
             skill_node_names=seed.skill_node_names,
+            leetcode_url=seed.leetcode_url,
         )
         db.add(problem)
         inserted += 1

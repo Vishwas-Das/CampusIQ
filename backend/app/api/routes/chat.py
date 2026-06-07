@@ -18,7 +18,7 @@ from app.schemas.chat import (
     ChatSessionWithMessages,
     SourceCitation,
 )
-from app.services import ai_chat
+from app.services import ai_chat, dsa_coach
 from app.services import chat as chat_service
 
 router = APIRouter()
@@ -30,6 +30,7 @@ def _to_session_response(session) -> ChatSessionResponse:
         user_id=session.user_id,
         chat_type=session.chat_type.value,
         subject_id=session.subject_id,
+        coding_problem_id=session.coding_problem_id,
         title=session.title,
         created_at=session.created_at,
         last_message_at=session.last_message_at,
@@ -69,6 +70,7 @@ def list_sessions(
     current_user: CurrentUser,
     chat_type: str = "note_assistant",
     subject_id: uuid.UUID | None = None,
+    coding_problem_id: uuid.UUID | None = None,
 ) -> list[ChatSessionResponse]:
     try:
         chat_type_enum = ChatType(chat_type)
@@ -76,7 +78,11 @@ def list_sessions(
         raise HTTPException(status_code=400, detail=f"Invalid chat_type: {chat_type}")
 
     sessions = chat_service.list_sessions(
-        db, current_user, chat_type_enum, subject_id=subject_id
+        db,
+        current_user,
+        chat_type_enum,
+        subject_id=subject_id,
+        coding_problem_id=coding_problem_id,
     )
     return [_to_session_response(s) for s in sessions]
 
@@ -103,6 +109,7 @@ def create_session(
         user=current_user,
         chat_type=chat_type,
         subject_id=data.subject_id,
+        coding_problem_id=data.coding_problem_id,
         title=data.title,
     )
     return _to_session_response(session)
@@ -124,6 +131,7 @@ def get_session(
         user_id=session.user_id,
         chat_type=session.chat_type.value,
         subject_id=session.subject_id,
+        coding_problem_id=session.coding_problem_id,
         title=session.title,
         created_at=session.created_at,
         last_message_at=session.last_message_at,
@@ -172,20 +180,33 @@ def send_message(
 
     # Subject scope: prefer the per-message override, fall back to the session
     effective_subject_id = data.subject_id or session.subject_id
+    is_coach = session.chat_type == ChatType.DSA_COACH
 
     def event_stream():
         # The generator captures the db session via closure. Because FastAPI's
         # `Depends(get_db)` closes the session after the response is built,
         # we need to keep using it inside the generator — which works because
         # StreamingResponse is consumed before the dependency yields.
-        for delta in ai_chat.stream_rag_response(
-            db,
-            user=current_user,
-            session=session,
-            user_message_text=data.content,
-            subject_id=effective_subject_id,
-            mode=data.mode,
-        ):
+        if is_coach:
+            # DSA Coach: Socratic hint ladder / solution, no RAG.
+            stream = dsa_coach.stream_coach_response(
+                db,
+                user=current_user,
+                session=session,
+                user_message_text=data.content,
+                coach_mode=data.coach_mode,
+                hint_level=data.hint_level,
+            )
+        else:
+            stream = ai_chat.stream_rag_response(
+                db,
+                user=current_user,
+                session=session,
+                user_message_text=data.content,
+                subject_id=effective_subject_id,
+                mode=data.mode,
+            )
+        for delta in stream:
             yield delta
 
     return StreamingResponse(event_stream(), media_type="text/plain; charset=utf-8")
