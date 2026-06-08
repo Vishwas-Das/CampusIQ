@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import io
 import logging
+import threading
 import time
 import uuid
 from functools import lru_cache
@@ -272,6 +273,45 @@ def is_tts_available() -> bool:
 MAX_TTS_CHARS = 900
 
 
+# ── Daily TTS character counter (Phase 21 cost visibility) ────────────
+# In-process counter keyed by UTC date string. Logs every increment so
+# tail -f on the backend log answers "how much of the ElevenLabs quota
+# have we burned today" without leaving the terminal. Resets at midnight
+# UTC; persists nothing — single-instance demo deploy, not a billing
+# system.
+
+_daily_tts_chars: dict[str, int] = {}
+_daily_tts_lock = threading.Lock()
+
+
+def _today_utc_key() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(tz=timezone.utc).date().isoformat()
+
+
+def _record_tts_chars(count: int) -> int:
+    """Add `count` to today's bucket and return the new running total."""
+    if count <= 0:
+        return _daily_tts_chars.get(_today_utc_key(), 0)
+    key = _today_utc_key()
+    with _daily_tts_lock:
+        total = _daily_tts_chars.get(key, 0) + count
+        _daily_tts_chars[key] = total
+    return total
+
+
+def tts_chars_today() -> int:
+    """Inspect today's count from logs / debug routes — read-only."""
+    return _daily_tts_chars.get(_today_utc_key(), 0)
+
+
+def _reset_tts_chars_for_tests() -> None:
+    """Test-only helper."""
+    with _daily_tts_lock:
+        _daily_tts_chars.clear()
+
+
 def synthesize_speech(
     text: str,
     *,
@@ -320,6 +360,15 @@ def synthesize_speech(
     except Exception as e:
         logger.exception("ElevenLabs TTS failed: %s", e)
         return None
+
+    # Bookkeeping: log the running day total so the demo runner can
+    # check the ElevenLabs starter quota at a glance.
+    running_total = _record_tts_chars(len(clean_text))
+    logger.info(
+        "ElevenLabs TTS: %s chars synthesized (today total: %s)",
+        len(clean_text),
+        running_total,
+    )
 
     return audio_bytes, voice_id
 
